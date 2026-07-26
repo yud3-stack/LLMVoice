@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llmvoice"
+version = "0.1.0"
+description = "Offline, local-first long-form voice cloning CLI for Windows"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+license = { text = "MIT" }
+authors = [{ name = "LLMVoice contributors" }]
+dependencies = [
+  "platformdirs>=4.3,<5",
+  "rich>=13.9,<15",
+  "typer>=0.15,<1",
+]
+
+[project.optional-dependencies]
+tts = [
+  "coqui-tts>=0.27.5,<0.28",
+  "transformers>=4.57,<5",
+]
+dev = [
+  "pytest>=8.3,<10",
+  "pytest-cov>=6,<8",
+]
+
+[project.scripts]
+llmvoice = "llmvoice.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["llmvoice"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
