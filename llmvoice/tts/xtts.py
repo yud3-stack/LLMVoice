@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,17 @@ class XTTSEngine(TTSEngine):
 
     @property
     def display_name(self) -> str:
-        return "Coqui XTTS-v2"
+        return "XTTS-v2"
+
+    @property
+    def is_model_installed(self) -> bool:
+        """Return whether the named XTTS model appears in the local model directory."""
+        if not self.models_dir.exists():
+            return False
+        return any(
+            path.is_dir() and "xtts_v2" in path.name.casefold()
+            for path in self.models_dir.rglob("*")
+        )
 
     def load(self) -> None:
         if self._model is not None:
@@ -60,7 +71,7 @@ class XTTSEngine(TTSEngine):
             )
         if self._model is None:
             raise EngineError("XTTS-v2 is not loaded.")
-        speaker_id = f"llmvoice-{voice_path.stem}"
+        speaker_id = self._speaker_id(voice_path)
         voice_is_cached = speaker_id in self._prepared_speakers
         try:
             self._model.tts_to_file(
@@ -73,4 +84,12 @@ class XTTSEngine(TTSEngine):
             )
             self._prepared_speakers.add(speaker_id)
         except Exception as exc:
-            raise EngineError(f"XTTS synthesis failed for a text chunk: {exc}") from exc
+            raise EngineError("XTTS synthesis failed.") from exc
+
+    @staticmethod
+    def _speaker_id(voice_path: Path) -> str:
+        stat = voice_path.stat()
+        identity = (
+            f"{voice_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+        ).encode("utf-8")
+        return f"llmvoice-{hashlib.sha256(identity).hexdigest()[:12]}"

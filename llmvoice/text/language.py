@@ -15,10 +15,9 @@ def detect_language(text: str) -> str:
     words = {word.casefold() for word in _WORDS.findall(lowered)}
     tr_score = len(words & _TR_MARKERS)
     en_score = len(words & _EN_MARKERS)
-    return "en" if en_score > tr_score else "tr"
+    return "en" if en_score >= tr_score else "tr"
 
 
 def resolve_language(requested: str, text: str) -> str:
     language = requested.strip().casefold()
     return detect_language(text) if language == "auto" else language
-

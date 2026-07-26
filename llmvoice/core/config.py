@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +12,8 @@ from llmvoice.core.paths import AppPaths
 VALID_DEVICES = {"auto", "cuda", "cpu"}
 MIN_SPEED = 0.5
 MAX_SPEED = 2.0
+MIN_CHUNK_PAUSE_MS = 0
+MAX_CHUNK_PAUSE_MS = 500
 
 
 @dataclass(frozen=True)
@@ -23,6 +25,7 @@ class AppConfig:
     device: str = "auto"
     engine: str = "xtts"
     chunk_size: int = 220
+    chunk_pause_ms: int = 80
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "AppConfig":
@@ -45,6 +48,10 @@ class AppConfig:
             raise ConfigurationError("Config 'default_speed' must be a number.")
         if not isinstance(self.chunk_size, int) or isinstance(self.chunk_size, bool):
             raise ConfigurationError("Config 'chunk_size' must be an integer.")
+        if not isinstance(self.chunk_pause_ms, int) or isinstance(
+            self.chunk_pause_ms, bool
+        ):
+            raise ConfigurationError("Config 'chunk_pause_ms' must be an integer.")
         if not isinstance(self.device, str):
             raise ConfigurationError("Config 'device' must be a string.")
         if self.device not in VALID_DEVICES:
@@ -57,6 +64,11 @@ class AppConfig:
             raise ConfigurationError("Only 'mp3' output is currently supported.")
         if not 80 <= self.chunk_size <= 400:
             raise ConfigurationError("Config 'chunk_size' must be between 80 and 400.")
+        if not MIN_CHUNK_PAUSE_MS <= self.chunk_pause_ms <= MAX_CHUNK_PAUSE_MS:
+            raise ConfigurationError(
+                f"Config 'chunk_pause_ms' must be between "
+                f"{MIN_CHUNK_PAUSE_MS} and {MAX_CHUNK_PAUSE_MS}."
+            )
         if not self.default_language.strip():
             raise ConfigurationError("Config 'default_language' cannot be empty.")
 
@@ -97,3 +109,48 @@ class ConfigStore:
             ) from exc
         finally:
             temporary.unlink(missing_ok=True)
+
+    def get(self, field: str) -> Any:
+        """Return one validated configuration field."""
+        self._validate_field(field)
+        return getattr(self.load(), field)
+
+    def set(self, field: str, raw_value: str) -> AppConfig:
+        """Parse, validate, and persist one configuration field."""
+        self._validate_field(field)
+        current = self.load()
+        value = self._parse_value(field, raw_value, current)
+        updated = replace(current, **{field: value})
+        updated.validate()
+        self.save(updated)
+        return updated
+
+    @staticmethod
+    def _validate_field(field: str) -> None:
+        if field not in AppConfig.__dataclass_fields__:
+            allowed = ", ".join(AppConfig.__dataclass_fields__)
+            raise ConfigurationError(
+                f"Unknown config field '{field}'.\n\nAvailable fields:\n{allowed}"
+            )
+
+    @staticmethod
+    def _parse_value(field: str, raw_value: str, current: AppConfig) -> Any:
+        existing = getattr(current, field)
+        if field == "default_voice":
+            return None if raw_value.casefold() in {"none", "null", ""} else raw_value
+        if isinstance(existing, bool):
+            lowered = raw_value.casefold()
+            if lowered not in {"true", "false"}:
+                raise ConfigurationError(f"Config '{field}' must be true or false.")
+            return lowered == "true"
+        if isinstance(existing, int) and not isinstance(existing, bool):
+            try:
+                return int(raw_value)
+            except ValueError as exc:
+                raise ConfigurationError(f"Config '{field}' must be an integer.") from exc
+        if isinstance(existing, float):
+            try:
+                return float(raw_value)
+            except ValueError as exc:
+                raise ConfigurationError(f"Config '{field}' must be a number.") from exc
+        return raw_value

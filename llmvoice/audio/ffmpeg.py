@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import logging
 import shutil
 import subprocess
 from pathlib import Path
 
 from llmvoice.core.exceptions import AudioToolError
 
+logger = logging.getLogger(__name__)
 _DLL_DIRECTORY_HANDLES: list[object] = []
 _REGISTERED_DLL_DIRECTORIES: set[Path] = set()
 
@@ -55,10 +57,22 @@ def require_ffmpeg() -> tuple[str, str]:
         return shared
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
+    if os.name == "nt" and ffmpeg and ffprobe:
+        raise AudioToolError(
+            "FFmpeg executables were found, but the shared libraries required "
+            "by TorchCodec were not.\n\n"
+            "Install on Windows:\n\n"
+            "winget install --id Gyan.FFmpeg.Shared\n\n"
+            "Then reopen the terminal and run:\n\n"
+            "ffmpeg -version"
+        )
     if not ffmpeg or not ffprobe:
         raise AudioToolError(
-            "FFmpeg and FFprobe were not found in PATH. Install FFmpeg, reopen the terminal, "
-            "and verify with: ffmpeg -version"
+            "FFmpeg was not found.\n\n"
+            "Install on Windows:\n\n"
+            "winget install --id Gyan.FFmpeg.Shared\n\n"
+            "Then reopen the terminal and run:\n\n"
+            "ffmpeg -version"
         )
     return ffmpeg, ffprobe
 
@@ -77,28 +91,7 @@ def run_tool(arguments: list[str], purpose: str) -> None:
     except OSError as exc:
         raise AudioToolError(f"Could not start FFmpeg while {purpose}.") from exc
     if result.returncode != 0:
+        logger.debug("FFmpeg command failed: %r\n%s", arguments, result.stderr)
         detail = result.stderr.strip().splitlines()
         message = detail[-1] if detail else "Unknown FFmpeg error"
         raise AudioToolError(f"FFmpeg failed while {purpose}: {message}")
-
-
-def probe_audio(path: Path) -> None:
-    _, ffprobe = require_ffmpeg()
-    try:
-        result = subprocess.run(
-            [
-                ffprobe, "-v", "error", "-select_streams", "a:0",
-                "-show_entries", "stream=codec_name,sample_rate,channels",
-                "-of", "default=noprint_wrappers=1", str(path),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            shell=False,
-        )
-    except OSError as exc:
-        raise AudioToolError(f"Could not inspect reference audio: {path}") from exc
-    if result.returncode != 0 or not result.stdout.strip():
-        raise AudioToolError(f"Reference file does not contain a readable audio stream: {path}")

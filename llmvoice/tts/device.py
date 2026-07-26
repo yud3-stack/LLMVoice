@@ -26,11 +26,9 @@ def resolve_device(requested: str) -> DeviceInfo:
             "Install a compatible NVIDIA driver and CUDA-enabled PyTorch, or use device 'cpu'."
         )
     if requested == "cpu" or not cuda_available:
-        suffix = " (CUDA unavailable; CPU fallback)" if requested == "auto" else ""
-        return DeviceInfo(kind="cpu", label=f"CPU{suffix}")
+        return DeviceInfo(kind="cpu", label="CPU")
     try:
         gpu_name = torch.cuda.get_device_name(0)
     except Exception:
         gpu_name = "NVIDIA GPU"
     return DeviceInfo(kind="cuda", label=f"{gpu_name} / CUDA")
-

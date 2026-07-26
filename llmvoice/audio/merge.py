@@ -11,12 +11,51 @@ def _concat_line(path: Path) -> str:
     return f"file '{escaped}'"
 
 
-def merge_wav_files(chunks: list[Path], destination: Path) -> None:
+def _create_pause(destination: Path, pause_ms: int) -> Path:
+    ffmpeg, _ = require_ffmpeg()
+    pause = destination.parent / "chunk-pause.wav"
+    run_tool(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=24000:cl=mono",
+            "-t",
+            f"{pause_ms / 1000:.3f}",
+            "-c:a",
+            "pcm_s16le",
+            str(pause),
+        ],
+        "creating the inter-chunk pause",
+    )
+    return pause
+
+
+def merge_wav_files(
+    chunks: list[Path],
+    destination: Path,
+    pause_ms: int = 0,
+) -> None:
+    """Merge WAV chunks and optionally insert a short pause between them."""
     if not chunks:
         raise ValueError("At least one audio chunk is required.")
     ffmpeg, _ = require_ffmpeg()
     manifest = destination.parent / "concat.txt"
-    manifest.write_text("\n".join(_concat_line(path) for path in chunks) + "\n", encoding="utf-8")
+    inputs: list[Path] = []
+    pause = _create_pause(destination, pause_ms) if pause_ms > 0 and len(chunks) > 1 else None
+    for index, chunk in enumerate(chunks):
+        inputs.append(chunk)
+        if pause is not None and index < len(chunks) - 1:
+            inputs.append(pause)
+    manifest.write_text(
+        "\n".join(_concat_line(path) for path in inputs) + "\n",
+        encoding="utf-8",
+    )
     run_tool(
         [
             ffmpeg, "-hide_banner", "-loglevel", "error", "-y",

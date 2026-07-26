@@ -1,38 +1,35 @@
 # LLMVoice
 
-LLMVoice, UTF-8 bir `.txt` dosyasını tamamen yerel çalışan bir voice-cloning
-modeliyle uzun biçimli MP3 sese dönüştüren Windows CLI uygulamasıdır.
+LLMVoice is a Windows CLI that converts UTF-8 text transcripts into MP3 audio
+using a fully local voice-cloning model.
 
 ```text
-TXT → normalize → doğal metin parçaları → XTTS-v2 → WAV birleştirme → MP3
+TXT -> normalize -> natural chunks -> XTTS-v2 -> audio merge -> MP3
 ```
 
-Cloud API, telemetry veya harici veri gönderimi yoktur. Model ağırlıkları ilk
-çalıştırmada indirildikten sonra sentez çevrimdışı yapılabilir.
+No cloud API, telemetry, or file upload is used. The first synthesis may
+download model weights; after that, synthesis can run offline.
 
 > [!IMPORTANT]
-> Varsayılan XTTS-v2 model ağırlıkları Coqui Public Model License (CPML)
-> kapsamındadır ve **yalnızca ticari olmayan kullanıma** izin verir. Modeli veya
-> çıktısını ticari amaçla kullanmadan önce farklı lisanslı bir motor ekleyin.
-> LLMVoice kaynak kodunun MIT lisansı, model ağırlıklarının lisansını değiştirmez.
+> XTTS-v2 model weights use the Coqui Public Model License (CPML), which permits
+> **non-commercial use only**. The MIT license of the LLMVoice source code does
+> not change the model license. Use a differently licensed engine before using
+> LLMVoice or its output commercially.
 
-## Gereksinimler
+## Requirements
 
-- Windows 10 veya 11 (64 bit)
-- Python 3.11–3.14
-- 64-bit FFmpeg ve FFprobe (`PATH` içinde)
-- Yaklaşık 4 GB model/disk alanı
-- NVIDIA GPU önerilir; CPU fallback çalışır fakat uzun metinlerde çok yavaştır
-- Voice cloning için tercihen 6–30 saniye temiz, tek konuşmacılı referans ses
+- Windows 10/11, 64-bit
+- Python 3.11-3.14
+- FFmpeg **shared build** and FFprobe
+- Approximately 4 GB of model/disk space
+- NVIDIA GPU recommended; CPU fallback is supported but significantly slower
+- A clean, single-speaker voice reference; approximately 6-30 seconds recommended
 
-XTTS-v2 Türkçe (`tr`) ve İngilizce (`en`) dahil 17 dili destekler.
+XTTS-v2 supports English (`en`), Turkish (`tr`), and other documented languages.
 
-## Sıfırdan kurulum
+## Installation
 
-### 1. Python ve sanal ortam
-
-[python.org](https://www.python.org/downloads/windows/) üzerinden Python kurarken
-`Add python.exe to PATH` seçeneğini işaretleyin. Ardından proje klasöründe:
+Create and activate a virtual environment:
 
 ```cmd
 py -3.11 -m venv .venv
@@ -40,125 +37,159 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 ```
 
-Python 3.12 veya 3.13 de kullanılabilir.
-
-### 2. FFmpeg
-
-Windows Package Manager ile:
+Install the shared FFmpeg build required by TorchCodec:
 
 ```cmd
 winget install --id Gyan.FFmpeg.Shared
 ```
 
-Terminali yeniden açın ve doğrulayın:
+Reopen the terminal and verify:
 
 ```cmd
 ffmpeg -version
 ffprobe -version
 ```
 
-Alternatif Windows derlemeleri [FFmpeg indirme sayfasında](https://ffmpeg.org/download.html)
-listelenir.
-
-### 3. PyTorch
-
-NVIDIA sürücünüzü güncelleyin. Güncel komutu
-[PyTorch kurulum seçicisinden](https://pytorch.org/get-started/locally/) alın.
-Örnek CUDA 13.0 kurulumu:
+Install PyTorch before LLMVoice so that pip does not select an unsuitable CPU
+wheel. Obtain the current command from the
+[PyTorch installation selector](https://pytorch.org/get-started/locally/).
+The verified Windows CUDA 13.0 combination used during development is:
 
 ```cmd
-pip install torch==2.11.0+cu130 torchaudio==2.11.0+cu130 torchcodec==0.13.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install torch==2.11.0+cu130 torchaudio==2.11.0+cu130 torchcodec==0.13.0+cu130 --index-url https://download.pytorch.org/whl/cu130
 ```
 
-CPU kurulumu:
+CPU-only alternative:
 
 ```cmd
-pip install torch torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu
+python -m pip install torch torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu
 ```
 
-Doğrulama:
+Install LLMVoice and XTTS:
 
 ```cmd
-python -c "import torch; print(torch.cuda.is_available()); print(torch.__version__)"
+python -m pip install -e ".[tts]"
 ```
 
-`True` görülüyorsa `device: auto` CUDA'yı seçer. Sistem CUDA toolkit'inin ayrıca
-kurulu olması çoğu hazır PyTorch wheel'i için gerekmez; uyumlu NVIDIA sürücüsü
-gereklidir.
-
-### 4. LLMVoice ve XTTS
+Development dependencies:
 
 ```cmd
-pip install -e ".[tts]"
+python -m pip install -e ".[tts,dev]"
 ```
 
-Geliştirme/test bağımlılıkları:
+The TTS extra pins `coqui-tts` to the compatible 0.27 release and keeps
+Transformers below 5. It intentionally does not select or replace the user's
+PyTorch CUDA/CPU build.
+
+## Quick start
+
+Check the local installation without downloading a model:
 
 ```cmd
-pip install -e ".[tts,dev]"
+llmvoice doctor
 ```
 
-İlk `start` çağrısında XTTS-v2 modeli indirilebilir ve CPML koşullarını kabul
-etmeniz istenebilir. Koşulları okuyup yalnızca kabul ediyorsanız onaylayın. Model
-dosyaları `%LOCALAPPDATA%\LLMVoice\models` altında tutulur.
-
-## Kullanım
-
-Bir referans sesi kaydedin:
+Add and inspect a voice:
 
 ```cmd
-llmvoice voice add friday samples\friday.wav
+llmvoice voice add friday reference.wav
+llmvoice voice info friday
 llmvoice voice list
 ```
 
-Transcript'i aynı klasöre `transcript.mp3` olarak üretin:
+Set it as the default:
 
 ```cmd
-llmvoice start samples\transcript.txt --voice friday
+llmvoice config set default_voice friday
 ```
 
-Özel çıktı, dil ve hız:
+Generate speech:
 
 ```cmd
-llmvoice start transcript.txt --voice friday --language tr --speed 0.95 -o output.mp3
+llmvoice start transcript.txt --language en
 ```
 
-Doğrudan referans dosyası:
+The default output is `transcript.mp3` in the transcript directory.
+
+## Start options
+
+Show the plan without loading XTTS or generating audio:
 
 ```cmd
-llmvoice start transcript.txt --voice "C:\Voices\friday.wav" --language en
+llmvoice start transcript.txt --voice friday --language en --dry-run
 ```
 
-Otomatik Türkçe/İngilizce dil sezgisi:
+Choose a custom output, speed, and direct reference path:
 
 ```cmd
-llmvoice start transcript.txt --voice friday --language auto
+llmvoice start transcript.txt --voice "C:\Voices\friday.mp3" --language en --speed 0.95 -o narration.mp3
 ```
 
-Ses silme ve config görüntüleme:
+Existing outputs are protected. Overwrite only when intentional:
 
 ```cmd
+llmvoice start transcript.txt --force
+llmvoice start transcript.txt -o narration.mp3 --force
+```
+
+Automatic English/Turkish detection is available:
+
+```cmd
+llmvoice start transcript.txt --language auto
+```
+
+This is a lightweight heuristic, not a confidence-scored language model. Pass
+`--language en` or `--language tr` when accuracy matters.
+
+Use `--debug` to show exception chains and subprocess diagnostics:
+
+```cmd
+llmvoice start transcript.txt --debug
+```
+
+Normal application errors never print a traceback. `Ctrl+C` exits with code 130,
+cleans the temporary job directory, and leaves no partial MP3.
+
+## Voice management
+
+Supported reference formats include WAV, MP3, FLAC, M4A, AAC, OGG, and Opus.
+`voice add` validates the audio stream, duration, sample rate, channel count,
+codec, and container before copying it.
+
+```cmd
+llmvoice voice add friday reference.mp3
+llmvoice voice info friday
+llmvoice voice list
 llmvoice voice remove friday
+llmvoice voice remove friday --yes
+```
+
+References shorter than 3 seconds are rejected. References longer than 30
+seconds are accepted with a warning. LLMVoice never modifies the original.
+It prepares a trimmed mono 24 kHz WAV under the reference cache.
+
+Endpoint trimming removes silence only from the beginning and end. Natural
+pauses inside the recording are preserved.
+
+## Configuration
+
+```cmd
 llmvoice config show
-llmvoice --version
+llmvoice config get default_voice
+llmvoice config set default_voice friday
+llmvoice config set default_language en
+llmvoice config set device auto
+llmvoice config set chunk_pause_ms 80
 ```
 
-Hız aralığı `0.5–2.0` değeridir. Hız, birleştirilmiş seste FFmpeg `atempo`
-filtresiyle uygulanır ve perde mümkün olduğunca korunur.
+Unknown fields and invalid values are rejected through `AppConfig` validation.
+Use `none` to clear the default voice:
 
-## Data dizini ve config
-
-İlk komutta şu yapı otomatik oluşur:
-
-```text
-%LOCALAPPDATA%\LLMVoice\
-├── voices\
-├── models\
-├── cache\
-└── config.json
+```cmd
+llmvoice config set default_voice none
 ```
 
-Varsayılan config:
+Default configuration:
 
 ```json
 {
@@ -168,84 +199,132 @@ Varsayılan config:
   "output_format": "mp3",
   "device": "auto",
   "engine": "xtts",
-  "chunk_size": 220
+  "chunk_size": 220,
+  "chunk_pause_ms": 80
 }
 ```
 
-`default_voice` değerini kayıtlı bir adla değiştirebilirsiniz. `device`,
-`auto`, `cuda` veya `cpu` olabilir. Config'i uygulama kapalıyken geçerli JSON
-olarak düzenleyin; hatalı değerler açıklayıcı bir hata üretir.
+Application data is stored below the Windows local application-data directory:
 
-## Uzun metin davranışı
+```text
+LLMVoice/
+|-- voices/
+|-- models/
+|-- cache/
+|   |-- references/
+|   `-- job-.../
+`-- config.json
+```
 
-Metin önce boşlukları normalize eder, fakat içeriği yeniden yazmaz. Paragraf ve
-cümle sınırları tercih edilerek `chunk_size` limitinde parçalara ayrılır. Her
-parça ayrı WAV üretilir. XTTS konuşmacı embedding'i ilk parçada hesaplanıp sonraki
-parçalarda tekrar kullanılır. Parçalar güvenli geçici dizinde birleştirilip MP3'e
-atomik olarak yazılır. Başarılı veya hatalı işlemden sonra geçici iş dizini temizlenir.
+Processed reference cache keys include the source path, size, modification
+timestamp, and processing version. Cache hits are probed; corrupt entries are
+rebuilt. Temporary `job-*` directories are always removed.
 
-Saatler süren transcript'lerde:
+## Long transcripts
 
-- CUDA kullanın ve başlangıçta kısa bir dosyayla ses kalitesini kontrol edin.
-- Referans kaydında müzik, yankı, birden çok kişi ve uzun sessizliklerden kaçının.
-- Çıktı için yeterli boş disk alanı bırakın.
-- Model yeniden yüklenmesin diye her transcript'i tek `start` çağrısında çalıştırın.
+The text is normalized without rewriting its meaning. Paragraph and sentence
+boundaries are preferred when creating bounded chunks. Each chunk is synthesized
+separately, and an 80 ms pause is inserted between chunks by default. Configure
+the pause from 0 to 500 ms using `chunk_pause_ms`.
 
-## Mimari
+XTTS voice conditioning is computed from `speaker_wav` on the first chunk and
+reused by internal speaker ID for later chunks. The ID is derived from the
+processed reference path, size, and modification timestamp to avoid collisions.
+
+Before synthesis, LLMVoice estimates speech duration and checks free space on
+the output drive. Chunk WAV files are merged in a secure job directory. MP3 is
+written to a temporary sibling file and atomically replaces the destination
+only after successful encoding.
+
+## Architecture
 
 ```text
 Typer CLI
-  └─ VoiceService
-      ├─ text normalizer / chunker / language detector
-      ├─ TTSEngine
-      │   └─ XTTSEngine (değiştirilebilir)
-      ├─ voice reference cache
-      └─ FFmpeg merge / MP3 encoder
+  -> VoiceService
+      -> TTSEngine
+          -> XTTSEngine
 ```
 
-CLI, Coqui API'sine doğrudan bağlı değildir. Yeni motor,
-`llmvoice.tts.base.TTSEngine` arayüzünü uygulayıp factory'ye kaydedilerek
-eklenebilir. Ağır model import'u lazy yapılır; unit testler model indirmez.
+The CLI does not import or call Coqui directly. Text processing, audio metadata,
+voice storage, rendering, diagnostics, synthesis, and encoding remain separate.
+New engines implement `llmvoice.tts.base.TTSEngine` and are registered in the
+engine factory.
 
-## Test
+## Testing
+
+Fast unit and mocked CLI/service tests:
 
 ```cmd
-pip install -e ".[dev]"
 pytest
 ```
 
-Unit testler text normalization/chunking, çıktı adı, voice çözümleme, config,
-geçersiz input ve mock TTS servis akışını kapsar. Gerçek XTTS GPU sentezi,
-model boyutu ve donanım gereksinimi nedeniyle unit testlere dahil değildir.
+FFmpeg integration tests:
 
-## Sorun giderme
+```cmd
+pytest -m integration
+```
 
-### `FFmpeg and FFprobe were not found`
+Integration tests generate small synthetic WAV files and verify:
 
-`winget install --id Gyan.FFmpeg.Shared` çalıştırın, terminali yeniden açın ve
-`ffmpeg -version` ile doğrulayın.
+- leading and trailing silence are trimmed;
+- middle silence is preserved;
+- corrupt reference cache is rebuilt;
+- valid/broken/short voice validation;
+- configurable inter-chunk pause.
 
-### `CUDA was requested but ... cannot access a CUDA GPU`
+The default test run never downloads XTTS or performs GPU synthesis.
 
-NVIDIA sürücüsünü ve CUDA uyumlu PyTorch wheel'ini kontrol edin. Geçici olarak
-config'te `"device": "cpu"` kullanabilirsiniz; CPU sentezi oldukça yavaştır.
+## Troubleshooting
 
-### XTTS yüklenemiyor
+### FFmpeg was not found
 
-- İlk indirme için internet bağlantısını ve disk alanını kontrol edin.
-- CPML lisans istemini okuyup yanıtlayın.
-- `pip show coqui-tts torch torchaudio torchcodec` ile paketleri doğrulayın.
-- Ayrıntılı hata için komutu `--debug` ile çalıştırın.
+Install the shared build, reopen the terminal, and verify it:
 
-### Referans ses okunamıyor
+```cmd
+winget install --id Gyan.FFmpeg.Shared
+ffmpeg -version
+```
 
-Dosyanın `.wav`, `.mp3`, `.flac`, `.m4a`, `.aac`, `.ogg` veya `.opus`
-olduğunu ve FFmpeg'in dosyayı açabildiğini kontrol edin. LLMVoice orijinali
-değiştirmez; kırpılmış mono 24 kHz WAV kopyasını cache altında üretir.
+The static `Gyan.FFmpeg` build provides executables but not the DLLs required by
+TorchCodec. Use `Gyan.FFmpeg.Shared`.
 
-### Çıktıda kopukluk veya ton değişimi
+### CUDA is unavailable
 
-Daha temiz bir referans kullanın, transcript noktalamasını düzeltin ve gerekirse
-config'teki `chunk_size` değerini 160–300 aralığında deneyin. XTTS üretimi
-deterministik değildir; uzun içerikte parçalar arasında küçük ton farkları
-oluşabilir.
+Run:
+
+```cmd
+python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+```
+
+Install a CUDA-enabled PyTorch wheel compatible with the NVIDIA driver. CPU
+fallback remains available but is much slower for long-form work.
+
+### XTTS cannot load
+
+- Confirm `llmvoice doctor` reports PyTorch, CUDA/CPU, FFmpeg, and XTTS.
+- Allow internet access for the first model download.
+- Read and answer the CPML license prompt.
+- Check free disk space.
+- Run again with `--debug` for technical details.
+
+### Reference audio is rejected
+
+Check that FFprobe can read it:
+
+```cmd
+ffprobe reference.wav
+```
+
+Use a clean, single-speaker segment with no music or heavy effects. Six to
+thirty seconds is generally preferable.
+
+### Chunk transitions sound abrupt
+
+Try a pause between 50 and 150 ms:
+
+```cmd
+llmvoice config set chunk_pause_ms 100
+```
+
+Also review transcript punctuation and try a `chunk_size` between 160 and 300.
+XTTS output is not deterministic, so small tonal differences can remain.

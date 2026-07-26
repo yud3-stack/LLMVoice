@@ -4,13 +4,25 @@ import hashlib
 import tempfile
 from pathlib import Path
 
-from llmvoice.audio.ffmpeg import probe_audio, require_ffmpeg, run_tool
+from llmvoice.audio.ffmpeg import require_ffmpeg, run_tool
+from llmvoice.audio.metadata import probe_audio
 from llmvoice.core.exceptions import AudioToolError
+
+ENDPOINT_TRIM_FILTER = (
+    "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02,"
+    "areverse,"
+    "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02,"
+    "areverse"
+)
+REFERENCE_PROCESSING_VERSION = "2"
 
 
 def _cache_key(source: Path) -> str:
     stat = source.stat()
-    value = f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
+    value = (
+        f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:"
+        f"{REFERENCE_PROCESSING_VERSION}"
+    ).encode("utf-8")
     return hashlib.sha256(value).hexdigest()[:24]
 
 
@@ -41,9 +53,7 @@ def prepare_reference(source: Path, cache_dir: Path) -> Path:
             [
                 ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
                 "-map", "0:a:0", "-ac", "1", "-ar", "24000",
-                "-af",
-                "silenceremove=start_periods=1:start_duration=0.1:start_threshold=-45dB:"
-                "stop_periods=1:stop_duration=0.2:stop_threshold=-45dB",
+                "-af", ENDPOINT_TRIM_FILTER,
                 "-c:a", "pcm_s16le", str(temporary),
             ],
             "preparing the voice reference",

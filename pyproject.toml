@@ -34,4 +34,7 @@ packages = ["llmvoice"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra -m 'not integration'"
+markers = [
+  "integration: requires local FFmpeg/FFprobe binaries",
+]
