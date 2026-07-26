@@ -1,0 +1,5 @@
+# Reproducible development/release constraints for the optional TTS layer.
+# PyTorch packages are intentionally not constrained here. Install the correct
+# CUDA or CPU wheels for the target machine before installing LLMVoice.
+coqui-tts==0.27.5
+transformers==4.57.6

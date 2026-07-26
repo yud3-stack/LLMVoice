@@ -34,7 +34,7 @@ from llmvoice.cli_output import (
 from llmvoice.core.config import MAX_SPEED, MIN_SPEED, ConfigStore
 from llmvoice.core.exceptions import LLMVoiceError, VoiceError
 from llmvoice.core.paths import AppPaths
-from llmvoice.core.storage import check_disk_space, estimate_speech_seconds
+from llmvoice.core.storage import check_synthesis_disk_space, estimate_speech_seconds
 from llmvoice.doctor import run_diagnostics
 from llmvoice.service import (
     SynthesisRequest,
@@ -204,7 +204,7 @@ def start(
             return
 
         require_ffmpeg()
-        check_disk_space(destination, estimated_seconds)
+        check_synthesis_disk_space(paths.cache_dir, destination, estimated_seconds)
         if not getattr(engine, "is_model_installed", True):
             console.print(
                 "XTTS-v2 model is not installed locally.\n"
@@ -385,8 +385,10 @@ def config_set(
 @app.command()
 def doctor() -> None:
     """Check local dependencies without downloading a model."""
+    needs_attention = False
 
     def action() -> None:
+        nonlocal needs_attention
         checks = run_diagnostics(AppPaths.discover())
         console.print("\n[bold]LLMVoice Doctor[/bold]\n")
         styles = {"ok": "green", "warning": "yellow", "error": "red"}
@@ -401,9 +403,12 @@ def doctor() -> None:
             if check.hint:
                 console.print(f"  [dim]{check.hint}[/dim]")
         ready = not any(check.status == "error" for check in checks)
+        needs_attention = not ready
         console.print("\n[green]System ready.[/green]" if ready else "\nSystem needs attention.")
 
     _run_safely(action)
+    if needs_attention:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":

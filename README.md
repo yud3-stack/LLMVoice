@@ -15,6 +15,9 @@ download model weights; after that, synthesis can run offline.
 > **non-commercial use only**. The MIT license of the LLMVoice source code does
 > not change the model license. Use a differently licensed engine before using
 > LLMVoice or its output commercially.
+>
+> See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) for the explicit
+> separation between source-code and model licensing.
 
 ## Requirements
 
@@ -74,12 +77,14 @@ python -m pip install -e ".[tts]"
 Development dependencies:
 
 ```cmd
-python -m pip install -e ".[tts,dev]"
+python -m pip install -c constraints.txt -e ".[tts,dev]"
 ```
 
 The TTS extra pins `coqui-tts` to the compatible 0.27 release and keeps
 Transformers below 5. It intentionally does not select or replace the user's
-PyTorch CUDA/CPU build.
+PyTorch CUDA/CPU build. `constraints.txt` makes development and release
+validation more repeatable but deliberately does not constrain `torch`,
+`torchaudio`, or `torchcodec`.
 
 ## Quick start
 
@@ -231,10 +236,12 @@ XTTS voice conditioning is computed from `speaker_wav` on the first chunk and
 reused by internal speaker ID for later chunks. The ID is derived from the
 processed reference path, size, and modification timestamp to avoid collisions.
 
-Before synthesis, LLMVoice estimates speech duration and checks free space on
-the output drive. Chunk WAV files are merged in a secure job directory. MP3 is
-written to a temporary sibling file and atomically replaces the destination
-only after successful encoding.
+Before synthesis, LLMVoice estimates speech duration and checks free space
+separately for the application cache and output volumes. If both paths use the
+same volume, one combined check accounts for temporary PCM and atomic MP3
+storage. Chunk WAV files are merged in a secure job directory. MP3 is written
+to a temporary sibling file and atomically replaces the destination only after
+successful encoding. A failed encode never replaces an existing output.
 
 ## Architecture
 
@@ -250,18 +257,32 @@ voice storage, rendering, diagnostics, synthesis, and encoding remain separate.
 New engines implement `llmvoice.tts.base.TTSEngine` and are registered in the
 engine factory.
 
-## Testing
+## Development and validation
+
+Install the same development tools used by CI:
+
+```cmd
+python -m pip install -c constraints.txt -e ".[tts,dev]"
+```
 
 Fast unit and mocked CLI/service tests:
 
 ```cmd
-pytest
+python -m pytest
 ```
 
 FFmpeg integration tests:
 
 ```cmd
-pytest -m integration
+python -m pytest -m integration
+```
+
+Run the remaining release checks:
+
+```cmd
+python -m compileall llmvoice
+python -m pip check
+python -m build
 ```
 
 Integration tests generate small synthetic WAV files and verify:
@@ -273,6 +294,25 @@ Integration tests generate small synthetic WAV files and verify:
 - configurable inter-chunk pause.
 
 The default test run never downloads XTTS or performs GPU synthesis.
+
+GitHub Actions runs the unit suite, compilation, dependency validation, package
+build, and a separate FFmpeg integration job on Python 3.11. It does not install
+or download XTTS model weights.
+
+Before a release, manually validate the locally installed GPU stack with a
+non-personal test reference that is not committed:
+
+```cmd
+llmvoice doctor
+llmvoice start samples\transcript.txt --voice testvoice --language en --force
+```
+
+## Licensing
+
+LLMVoice source code is licensed under the [MIT License](LICENSE). XTTS-v2
+weights are licensed separately under CPML; MIT does not grant commercial model
+rights. See [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) before
+redistributing or using model-backed output.
 
 ## Troubleshooting
 

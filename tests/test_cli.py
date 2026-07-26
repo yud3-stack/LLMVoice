@@ -90,6 +90,20 @@ def test_doctor_renders_mocked_checks(tmp_path, monkeypatch) -> None:
     assert "CPU is slower" in result.output
 
 
+def test_doctor_returns_nonzero_for_critical_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        "llmvoice.cli.run_diagnostics",
+        lambda paths: [
+            DiagnosticCheck("LLMVoice", "ok", "0.1.1"),
+            DiagnosticCheck("FFmpeg", "error", "Not found"),
+        ],
+    )
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 1
+    assert "System needs attention" in result.output
+
+
 def test_dry_run_does_not_generate_audio(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
     transcript = tmp_path / "transcript.txt"
@@ -128,7 +142,7 @@ def test_force_controls_overwrite(tmp_path, monkeypatch) -> None:
     metadata = AudioMetadata(4.0, 24000, 1, "mp3", "mp3")
     monkeypatch.setattr("llmvoice.cli.resolve_device", lambda requested: DeviceInfo("cpu", "CPU"))
     monkeypatch.setattr("llmvoice.cli.require_ffmpeg", lambda: ("ffmpeg", "ffprobe"))
-    monkeypatch.setattr("llmvoice.cli.check_disk_space", lambda *args: (1, 1))
+    monkeypatch.setattr("llmvoice.cli.check_synthesis_disk_space", lambda *args: (1, 1))
     monkeypatch.setattr("llmvoice.cli.probe_audio", lambda path: metadata)
 
     class Engine:
