@@ -30,7 +30,55 @@ download model weights; after that, synthesis can run offline.
 
 XTTS-v2 supports English (`en`), Turkish (`tr`), and other documented languages.
 
-## Installation
+## User installation
+
+After the first installer-enabled release is published, download the canonical
+bootstrap installer from the latest GitHub Release:
+
+```powershell
+irm https://github.com/yud3-stack/LLMVoice/releases/latest/download/install.ps1 -OutFile install.ps1
+.\install.ps1
+```
+
+If the local Windows PowerShell execution policy blocks reviewed scripts, use a
+process-scoped invocation that does not change the user or machine policy:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The installer downloads the release manifest and checksum-verified wheel,
+creates a dedicated versioned virtual environment below
+`%LOCALAPPDATA%\LLMVoice\runtime`, installs the selected CUDA or CPU profile,
+adds `%LOCALAPPDATA%\LLMVoice\bin` to the user PATH, and runs `llmvoice doctor`.
+It does not modify global Python environments or the machine PATH.
+
+Open a new terminal after installation:
+
+```cmd
+llmvoice doctor
+llmvoice voice add friday reference.wav
+llmvoice config set default_voice friday
+llmvoice start transcript.txt --language en
+```
+
+Installer options include:
+
+```powershell
+.\install.ps1 -Runtime auto
+.\install.ps1 -Runtime cuda
+.\install.ps1 -Runtime cpu
+.\install.ps1 -Version 0.1.2
+.\install.ps1 -Force
+.\install.ps1 -Debug
+```
+
+The website installer URL is intentionally not documented yet. Website
+integration will use the same GitHub Release assets in a later release.
+See [installer/README.md](installer/README.md) for architecture, upgrades,
+security, and manual uninstall details.
+
+## Development installation
 
 Create and activate a virtual environment:
 
@@ -68,7 +116,7 @@ CPU-only alternative:
 python -m pip install torch torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu
 ```
 
-Install LLMVoice and XTTS:
+Install LLMVoice and XTTS from the working tree:
 
 ```cmd
 python -m pip install -e ".[tts]"
@@ -85,6 +133,9 @@ Transformers below 5. It intentionally does not select or replace the user's
 PyTorch CUDA/CPU build. `constraints.txt` makes development and release
 validation more repeatable but deliberately does not constrain `torch`,
 `torchaudio`, or `torchcodec`.
+
+Editable installs are for contributors. Normal users should use the release
+installer above.
 
 ## Quick start
 
@@ -283,6 +334,9 @@ Run the remaining release checks:
 python -m compileall llmvoice
 python -m pip check
 python -m build
+python scripts\release.py validate-tag --tag v0.1.2
+python scripts\release.py prepare --tag v0.1.2 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
+python scripts\release.py validate --tag v0.1.2 --assets-dir release-assets
 ```
 
 Integration tests generate small synthetic WAV files and verify:
@@ -298,6 +352,21 @@ The default test run never downloads XTTS or performs GPU synthesis.
 GitHub Actions runs the unit suite, compilation, dependency validation, package
 build, and a separate FFmpeg integration job on Python 3.11. It does not install
 or download XTTS model weights.
+
+Tag pushes matching `v*` run an independent release gate. The tag must exactly
+match `project.version`; otherwise no release is created. The workflow rebuilds
+and validates:
+
+```text
+llmvoice-X.Y.Z-py3-none-any.whl
+llmvoice-X.Y.Z.tar.gz
+install.ps1
+install-manifest.json
+SHA256SUMS.txt
+```
+
+Release assets never include model weights, voices, caches, virtual
+environments, generated audio, local configuration, or credentials.
 
 Before a release, manually validate the locally installed GPU stack with a
 non-personal test reference that is not committed:

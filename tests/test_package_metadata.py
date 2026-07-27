@@ -1,4 +1,5 @@
 from pathlib import Path
+from importlib.metadata import version
 import tomllib
 
 
@@ -8,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def test_release_metadata_and_build_exclusions() -> None:
     metadata = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     project = metadata["project"]
-    assert project["version"] == "0.1.1"
+    assert project["version"] == version("llmvoice")
     assert project["license"] == "MIT"
     assert project["license-files"] == ["LICENSE"]
 
