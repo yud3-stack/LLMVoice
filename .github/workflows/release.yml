@@ -23,10 +23,12 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Parse installer and run Python detection regressions
+      - name: Parse installer and run PowerShell regressions
         shell: powershell
         run: |
           .\tests\powershell\test_python_detection.ps1 `
+            -InstallerPath .\installer\install.ps1
+          .\tests\powershell\test_native_invocation.ps1 `
             -InstallerPath .\installer\install.ps1
 
   release:

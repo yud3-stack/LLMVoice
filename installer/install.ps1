@@ -52,20 +52,81 @@ function Invoke-Native {
         [switch]$Capture
     )
 
-    if ($Capture) {
-        $output = & $FilePath @Arguments 2>&1
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
-            $detail = ($output | Select-Object -Last 8) -join [Environment]::NewLine
-            Throw-InstallerError "Command failed with exit code $exitCode.`n$detail"
-        }
-        return ($output -join [Environment]::NewLine).Trim()
+    if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) {
+        Throw-InstallerError "Native executable was not found: $FilePath"
     }
 
-    & $FilePath @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        Throw-InstallerError "Command failed with exit code $exitCode`: $FilePath"
+    $previousErrorActionPreference = $ErrorActionPreference
+    $stderrPath = $null
+    try {
+        # Windows PowerShell 5.1 can surface native stderr as ErrorRecord
+        # objects. Native success is determined only by the process exit code.
+        $ErrorActionPreference = "Continue"
+
+        if ($Capture) {
+            $stderrPath = [IO.Path]::GetTempFileName()
+            $stdout = @(& $FilePath @Arguments 2> $stderrPath)
+            $exitCode = $LASTEXITCODE
+            $stderr = @()
+            if ((Get-Item -LiteralPath $stderrPath).Length -gt 0) {
+                $stderr = @(Get-Content -LiteralPath $stderrPath)
+                if ($exitCode -eq 0) {
+                    Write-Debug (
+                        "Native command wrote to stderr but exited successfully: " +
+                        $FilePath
+                    )
+                }
+            }
+            if ($exitCode -ne 0) {
+                $detail = @($stdout) + @($stderr) |
+                    Select-Object -Last 8
+                $detailText = ($detail -join [Environment]::NewLine).Trim()
+                Throw-InstallerError (
+                    "Command failed with exit code $exitCode`: $FilePath" +
+                    $(if ($detailText) {
+                        "`n$detailText"
+                    }
+                    else {
+                        ""
+                    })
+                )
+            }
+            return (($stdout | ForEach-Object { [string]$_ }) -join (
+                [Environment]::NewLine
+            )).Trim()
+        }
+
+        $combinedOutput = New-Object System.Collections.Generic.List[string]
+        & $FilePath @Arguments 2>&1 | ForEach-Object {
+            $line = [string]$_
+            $null = $combinedOutput.Add($line)
+            Write-Host $line
+        }
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            $detailText = (
+                $combinedOutput |
+                Select-Object -Last 8
+            ) -join [Environment]::NewLine
+            Throw-InstallerError (
+                "Command failed with exit code $exitCode`: $FilePath" +
+                $(if ($detailText) {
+                    "`n$detailText"
+                }
+                else {
+                    ""
+                })
+            )
+        }
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+        if (
+            $null -ne $stderrPath -and
+            (Test-Path -LiteralPath $stderrPath -PathType Leaf)
+        ) {
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -138,7 +199,7 @@ function Get-ReleaseManifest {
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {
-            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.3."
+            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.4."
         }
         $uri = "https://github.com/$($script:Repository)/releases/download/v$RequestedVersion/install-manifest.json"
     }
