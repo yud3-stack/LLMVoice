@@ -126,3 +126,36 @@ def test_powershell_runtime_profile_regressions() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RUNTIME_PROFILE_CASES_PASSED=6" in result.stdout
+
+
+@pytest.mark.integration
+def test_powershell_publish_transaction_regressions() -> None:
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
+    if powershell is None:
+        pytest.skip("PowerShell is not installed.")
+    project_root = Path(__file__).resolve().parents[1]
+    installer = project_root / "installer" / "install.ps1"
+    test_script = project_root / "tests" / "powershell" / "test_publish_transaction.ps1"
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(test_script),
+            "-InstallerPath",
+            str(installer),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        shell=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "LAUNCHER_SINGLE_MOVE=PASSED" in result.stdout
+    assert "PUBLISH_TRANSACTION=PASSED" in result.stdout
+    assert "PUBLISH_TRANSACTION_CASES_PASSED=7" in result.stdout

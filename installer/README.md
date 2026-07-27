@@ -30,7 +30,7 @@ or arbitrary downloaded script execution are used.
 |-- runtime\
 |   |-- install-state.json
 |   `-- versions\
-|       `-- 0.1.6-cuda-<id>\
+|       `-- 0.1.7-cuda-<id>\
 |           `-- venv\
 |-- bin\
 |   `-- llmvoice.cmd
@@ -68,7 +68,7 @@ Options:
 .\install.ps1 -Runtime auto
 .\install.ps1 -Runtime cuda
 .\install.ps1 -Runtime cpu
-.\install.ps1 -Version 0.1.6
+.\install.ps1 -Version 0.1.7
 .\install.ps1 -Force
 .\install.ps1 -Debug
 ```

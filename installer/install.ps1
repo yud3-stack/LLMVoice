@@ -199,7 +199,7 @@ function Get-ReleaseManifest {
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {
-            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.6."
+            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.7."
         }
         $uri = "https://github.com/$($script:Repository)/releases/download/v$RequestedVersion/install-manifest.json"
     }
@@ -1134,9 +1134,18 @@ finally:
     }
 }
 
+function Get-PersistedUserPath {
+    return [Environment]::GetEnvironmentVariable("Path", "User")
+}
+
+function Set-PersistedUserPath {
+    param([AllowNull()][string]$Value)
+    [Environment]::SetEnvironmentVariable("Path", $Value, "User")
+}
+
 function Add-UserPath {
     param([string]$Directory)
-    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $userPath = Get-PersistedUserPath
     $entries = @()
     if (-not [string]::IsNullOrWhiteSpace($userPath)) {
         $entries = @($userPath -split ";" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
@@ -1151,7 +1160,7 @@ function Add-UserPath {
     }
     if (-not $present) {
         $updated = (@($entries) + @($Directory)) -join ";"
-        [Environment]::SetEnvironmentVariable("Path", $updated, "User")
+        Set-PersistedUserPath -Value $updated
     }
     $processEntries = @($env:Path -split ";")
     if (-not ($processEntries | Where-Object {
@@ -1169,20 +1178,46 @@ function Publish-Installation {
         [Parameter(Mandatory = $true)]$RuntimeResult
     )
 
-    New-Item -ItemType Directory -Path $script:BinDirectory -Force | Out-Null
-    Add-UserPath -Directory $script:BinDirectory
     $launcherPath = Join-Path $script:BinDirectory "llmvoice.cmd"
     $launcherTemporary = "$launcherPath.new"
+    $stateDirectory = Split-Path -Parent $script:StatePath
+    $stateTemporary = "$($script:StatePath).new"
+
+    New-Item -ItemType Directory -Path $script:BinDirectory -Force | Out-Null
+    New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+
+    $oldLauncherExists = Test-Path -LiteralPath $launcherPath -PathType Leaf
+    $oldStateExists = Test-Path -LiteralPath $script:StatePath -PathType Leaf
+    $oldLauncher = if ($oldLauncherExists) {
+        [IO.File]::ReadAllBytes($launcherPath)
+    }
+    else {
+        $null
+    }
+    $oldState = if ($oldStateExists) {
+        [IO.File]::ReadAllBytes($script:StatePath)
+    }
+    else {
+        $null
+    }
+    $oldUserPath = Get-PersistedUserPath
+    $oldProcessPath = $env:Path
+
+    Remove-Item `
+        -LiteralPath $launcherTemporary `
+        -Force `
+        -ErrorAction SilentlyContinue
+    Remove-Item `
+        -LiteralPath $stateTemporary `
+        -Force `
+        -ErrorAction SilentlyContinue
+
     $launcherContent = (
         "@echo off`r`n" +
         "`"%~dp0..\runtime\versions\$RuntimeId\venv\Scripts\llmvoice.exe`" %*`r`n"
     )
     [IO.File]::WriteAllText($launcherTemporary, $launcherContent, [Text.Encoding]::ASCII)
-    Move-Item -LiteralPath $launcherTemporary -Destination $launcherPath -Force
 
-    $stateDirectory = Split-Path -Parent $script:StatePath
-    New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
-    $stateTemporary = "$($script:StatePath).new"
     $state = [ordered]@{
         schemaVersion = 1
         version = [string]$Manifest.version
@@ -1198,34 +1233,78 @@ function Publish-Installation {
         (New-Object Text.UTF8Encoding($false))
     )
 
-    $oldLauncher = $null
-    $oldState = $null
-    if (Test-Path -LiteralPath $launcherPath -PathType Leaf) {
-        $oldLauncher = [IO.File]::ReadAllBytes($launcherPath)
-    }
-    if (Test-Path -LiteralPath $script:StatePath -PathType Leaf) {
-        $oldState = [IO.File]::ReadAllBytes($script:StatePath)
-    }
     try {
+        if (-not (Test-Path -LiteralPath $launcherTemporary -PathType Leaf)) {
+            Throw-InstallerError "Launcher transaction file was not created."
+        }
+        if (-not (Test-Path -LiteralPath $stateTemporary -PathType Leaf)) {
+            Throw-InstallerError "Install-state transaction file was not created."
+        }
+        if ([IO.File]::ReadAllText($launcherTemporary) -ne $launcherContent) {
+            Throw-InstallerError "Launcher transaction file validation failed."
+        }
+        try {
+            $temporaryState = Get-Content `
+                -LiteralPath $stateTemporary `
+                -Raw `
+                -Encoding UTF8 |
+                ConvertFrom-Json
+            if ([string]$temporaryState.version -ne [string]$Manifest.version) {
+                Throw-InstallerError "Install-state transaction version is invalid."
+            }
+        }
+        catch {
+            Throw-InstallerError "Install-state transaction file validation failed."
+        }
+
         Move-Item -LiteralPath $launcherTemporary -Destination $launcherPath -Force
         Move-Item -LiteralPath $stateTemporary -Destination $script:StatePath -Force
+        Add-UserPath -Directory $script:BinDirectory
+        $script:InstallationCommitted = $true
     }
     catch {
-        if ($null -ne $oldLauncher) {
-            [IO.File]::WriteAllBytes($launcherPath, $oldLauncher)
+        $publishError = $_
+        try {
+            if ($oldLauncherExists) {
+                [IO.File]::WriteAllBytes($launcherPath, $oldLauncher)
+            }
+            else {
+                Remove-Item `
+                    -LiteralPath $launcherPath `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+            if ($oldStateExists) {
+                [IO.File]::WriteAllBytes($script:StatePath, $oldState)
+            }
+            else {
+                Remove-Item `
+                    -LiteralPath $script:StatePath `
+                    -Force `
+                    -ErrorAction SilentlyContinue
+            }
+            Set-PersistedUserPath -Value $oldUserPath
+            $env:Path = $oldProcessPath
         }
-        else {
-            Remove-Item -LiteralPath $launcherPath -Force -ErrorAction SilentlyContinue
+        catch {
+            Throw-InstallerError (
+                "Installation publish failed and rollback was incomplete.`n" +
+                "Publish error : $($publishError.Exception.Message)`n" +
+                "Rollback error: $($_.Exception.Message)"
+            )
         }
-        if ($null -ne $oldState) {
-            [IO.File]::WriteAllBytes($script:StatePath, $oldState)
-        }
-        else {
-            Remove-Item -LiteralPath $script:StatePath -Force -ErrorAction SilentlyContinue
-        }
-        throw
+        throw $publishError
     }
-    $script:InstallationCommitted = $true
+    finally {
+        Remove-Item `
+            -LiteralPath $launcherTemporary `
+            -Force `
+            -ErrorAction SilentlyContinue
+        Remove-Item `
+            -LiteralPath $stateTemporary `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
 }
 
 function Remove-SafeRuntimeDirectory {
