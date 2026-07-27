@@ -6,15 +6,34 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
+  windows-installer-tests:
+    name: Windows PowerShell 5.1 installer tests
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Parse installer and run Python detection regressions
+        shell: powershell
+        run: |
+          .\tests\powershell\test_python_detection.ps1 `
+            -InstallerPath .\installer\install.ps1
+
   release:
     name: Validate, build, and publish
+    needs: windows-installer-tests
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

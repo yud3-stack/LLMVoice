@@ -33,7 +33,39 @@ foreach ($definition in $definitions) {
     . ([scriptblock]::Create($definition.Extent.Text))
 }
 
-$tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd("\")
+function Normalize-DirectoryPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $rootPath = [IO.Path]::GetPathRoot($fullPath)
+    if ($fullPath.Length -eq $rootPath.Length) {
+        return $rootPath
+    }
+    $separators = [char[]]@(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    return $fullPath.TrimEnd($separators)
+}
+
+function Join-TestPath {
+    param([Parameter(Mandatory = $true)][string[]]$Segments)
+
+    $path = $testRoot
+    foreach ($segment in $Segments) {
+        $path = Join-Path $path $segment
+    }
+    return $path
+}
+
+$isWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$pathComparison = if ($isWindows) {
+    [StringComparison]::OrdinalIgnoreCase
+}
+else {
+    [StringComparison]::Ordinal
+}
+$tempParent = Normalize-DirectoryPath ([IO.Path]::GetTempPath())
 $testRoot = Join-Path $tempParent (
     "LLMVoice-python-detection-tests-" + [Guid]::NewGuid().ToString("N")
 )
@@ -41,8 +73,9 @@ $null = New-Item -ItemType Directory -Path $testRoot
 $script:Passed = 0
 
 function New-FakeExecutable {
-    param([string]$RelativePath)
-    $path = Join-Path $testRoot $RelativePath
+    param([Parameter(Mandatory = $true)][string[]]$Segments)
+
+    $path = Join-TestPath -Segments $Segments
     $null = New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force
     [IO.File]::WriteAllBytes($path, [byte[]]@())
     return $path
@@ -136,7 +169,7 @@ function Invoke-SelectionCase {
 try {
     foreach ($version in @("3.11.9", "3.12.8", "3.13.14", "3.14.5")) {
         $source = "python-$version"
-        $path = New-FakeExecutable "$source\python.exe"
+        $path = New-FakeExecutable -Segments @($source, "python.exe")
         Invoke-SelectionCase `
             -Name "$version x64 accepted" `
             -Candidates @((New-TestCandidate $source $path 0)) `
@@ -147,7 +180,7 @@ try {
 
     foreach ($version in @("3.10.14", "3.15.0")) {
         $source = "python-$version"
-        $path = New-FakeExecutable "$source\python.exe"
+        $path = New-FakeExecutable -Segments @($source, "python.exe")
         Invoke-SelectionCase `
             -Name "$version rejected" `
             -Candidates @((New-TestCandidate $source $path 0)) `
@@ -156,7 +189,7 @@ try {
             -ExpectedVersion ""
     }
 
-    $path32 = New-FakeExecutable "python-32\python.exe"
+    $path32 = New-FakeExecutable -Segments @("python-32", "python.exe")
     Invoke-SelectionCase `
         -Name "32-bit rejected" `
         -Candidates @((New-TestCandidate "python-32" $path32 0)) `
@@ -164,8 +197,9 @@ try {
         -ExpectedSource "" `
         -ExpectedVersion ""
 
-    $storeAlias = New-FakeExecutable "Microsoft\WindowsApps\python.exe"
-    $fallback = New-FakeExecutable "fallback\python.exe"
+    $storeAlias = New-FakeExecutable `
+        -Segments @("Microsoft", "WindowsApps", "python.exe")
+    $fallback = New-FakeExecutable -Segments @("fallback", "python.exe")
     Invoke-SelectionCase `
         -Name "broken Store alias rejected" `
         -Candidates @(
@@ -179,9 +213,9 @@ try {
         -ExpectedSource "fallback" `
         -ExpectedVersion "3.13.14"
 
-    $python311 = New-FakeExecutable "multiple\311\python.exe"
-    $python314 = New-FakeExecutable "multiple\314\python.exe"
-    $python313 = New-FakeExecutable "multiple\313\python.exe"
+    $python311 = New-FakeExecutable -Segments @("multiple", "311", "python.exe")
+    $python314 = New-FakeExecutable -Segments @("multiple", "314", "python.exe")
+    $python313 = New-FakeExecutable -Segments @("multiple", "313", "python.exe")
     Invoke-SelectionCase `
         -Name "highest supported version selected" `
         -Candidates @(
@@ -197,7 +231,7 @@ try {
         -ExpectedSource "v314" `
         -ExpectedVersion "3.14.5"
 
-    $launcherPython = New-FakeExecutable "launcher\python.exe"
+    $launcherPython = New-FakeExecutable -Segments @("launcher", "python.exe")
     Invoke-SelectionCase `
         -Name "py.exe 3.14 selector" `
         -Candidates @(
@@ -209,7 +243,7 @@ try {
         -ExpectedSource "py.exe" `
         -ExpectedVersion "3.14.5"
 
-    $directPython = New-FakeExecutable "direct\python.exe"
+    $directPython = New-FakeExecutable -Segments @("direct", "python.exe")
     Invoke-SelectionCase `
         -Name "direct Python fallback" `
         -Candidates @((New-TestCandidate "python.exe" $directPython 0)) `
@@ -219,7 +253,7 @@ try {
         -ExpectedSource "python.exe" `
         -ExpectedVersion "3.12.8"
 
-    $spacePython = New-FakeExecutable "path with spaces\python.exe"
+    $spacePython = New-FakeExecutable -Segments @("path with spaces", "python.exe")
     Invoke-SelectionCase `
         -Name "path with spaces" `
         -Candidates @((New-TestCandidate "spaces" $spacePython 0)) `
@@ -227,8 +261,8 @@ try {
         -ExpectedSource "spaces" `
         -ExpectedVersion "3.14.5"
 
-    $broken = New-FakeExecutable "broken\python.exe"
-    $later = New-FakeExecutable "later\python.exe"
+    $broken = New-FakeExecutable -Segments @("broken", "python.exe")
+    $later = New-FakeExecutable -Segments @("later", "python.exe")
     Invoke-SelectionCase `
         -Name "failed candidate does not stop probing" `
         -Candidates @(
@@ -245,8 +279,17 @@ try {
     Write-Output "PYTHON_DETECTION_CASES_PASSED=$script:Passed"
 }
 finally {
-    $resolved = [IO.Path]::GetFullPath($testRoot).TrimEnd("\")
-    if ([IO.Path]::GetDirectoryName($resolved) -ne $tempParent) {
+    $resolved = Normalize-DirectoryPath $testRoot
+    $resolvedParent = Normalize-DirectoryPath (
+        [IO.Path]::GetDirectoryName($resolved)
+    )
+    if (
+        -not [string]::Equals(
+            $resolvedParent,
+            $tempParent,
+            $pathComparison
+        )
+    ) {
         throw "Refusing test cleanup outside the system temp directory."
     }
     if ([IO.Directory]::Exists($resolved)) {
