@@ -288,6 +288,14 @@ def test_installer_and_release_workflow_security_invariants() -> None:
     assert "Runtime package version mismatch for $packageName" in installer
     assert "import torchcodec" in installer
     assert "AudioDecoder" in installer
+    bootstrap_position = installer.index("ffmpeg_bootstrap.require_ffmpeg()")
+    torchcodec_import_position = installer.index(
+        "    import torchcodec",
+        bootstrap_position,
+    )
+    assert bootstrap_position < torchcodec_import_position
+    assert "dllDirectoryRegistered" in installer
+    assert "LLMVOICE_RUNTIME_DIAGNOSTICS=" in installer
     assert 'if ($ProfileName -eq "cuda" -and -not [bool]$Probe.cuda)' in installer
     assert "CUDA-enabled PyTorch was installed" in installer
     assert "silent fallback" not in installer.lower()

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "LLMVoice"
-version = "0.1.5"
+version = "0.1.6"
 description = "Offline, local-first long-form voice cloning CLI for Windows"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"

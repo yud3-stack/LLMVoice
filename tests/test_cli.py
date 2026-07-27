@@ -114,10 +114,14 @@ def test_dry_run_does_not_generate_audio(tmp_path, monkeypatch) -> None:
     ConfigStore(AppPaths(tmp_path / "data")).set("default_voice", "friday")
     monkeypatch.setattr("llmvoice.cli.resolve_device", lambda requested: DeviceInfo("cpu", "CPU"))
 
-    class Engine:
-        display_name = "XTTS-v2"
-
-    monkeypatch.setattr("llmvoice.cli.create_engine", lambda *args: Engine())
+    monkeypatch.setattr(
+        "llmvoice.cli.require_ffmpeg",
+        lambda: (_ for _ in ()).throw(AssertionError("dry-run used FFmpeg")),
+    )
+    monkeypatch.setattr(
+        "llmvoice.cli.create_engine",
+        lambda *args: (_ for _ in ()).throw(AssertionError("dry-run created engine")),
+    )
     result = runner.invoke(
         app,
         ["start", str(transcript), "--language", "en", "--dry-run"],
@@ -164,6 +168,56 @@ def test_force_controls_overwrite(tmp_path, monkeypatch) -> None:
     assert "Use --force" in rejected.output
     assert accepted.exit_code == 0
     assert output.read_bytes() == b"new"
+
+
+def test_ffmpeg_bootstrap_precedes_engine_creation(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("This is a short transcript.", encoding="utf-8")
+    voice_dir = tmp_path / "data" / "voices"
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "friday.wav").write_bytes(b"voice")
+    events: list[str] = []
+    metadata = AudioMetadata(4.0, 24000, 1, "mp3", "mp3")
+
+    monkeypatch.setattr(
+        "llmvoice.cli.resolve_device",
+        lambda requested: DeviceInfo("cpu", "CPU"),
+    )
+    monkeypatch.setattr(
+        "llmvoice.cli.require_ffmpeg",
+        lambda: events.append("ffmpeg") or ("ffmpeg", "ffprobe"),
+    )
+    monkeypatch.setattr(
+        "llmvoice.cli.check_synthesis_disk_space",
+        lambda *args: (1, 1),
+    )
+    monkeypatch.setattr("llmvoice.cli.probe_audio", lambda path: metadata)
+
+    class Engine:
+        display_name = "XTTS-v2"
+        is_model_installed = True
+
+    monkeypatch.setattr(
+        "llmvoice.cli.create_engine",
+        lambda *args: events.append("engine") or Engine(),
+    )
+
+    def fake_run(self, request, plan, progress, stage):
+        events.append("service")
+        request.output_path.write_bytes(b"audio")
+
+    monkeypatch.setattr("llmvoice.cli.VoiceService.run", fake_run)
+    result = runner.invoke(
+        app,
+        ["start", str(transcript), "--voice", "friday"],
+    )
+
+    assert result.exit_code == 0
+    assert events == ["ffmpeg", "engine", "service"]
 
 
 def test_ctrl_c_uses_exit_130_without_traceback(tmp_path, monkeypatch) -> None:

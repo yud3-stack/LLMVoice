@@ -125,4 +125,4 @@ def test_powershell_runtime_profile_regressions() -> None:
         shell=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "RUNTIME_PROFILE_CASES_PASSED=5" in result.stdout
+    assert "RUNTIME_PROFILE_CASES_PASSED=6" in result.stdout

@@ -81,6 +81,10 @@ $validProbe = [pscustomobject]@{
     cuda = $true
     gpu = "NVIDIA Test GPU"
     audioDecode = $true
+    ffmpegDirectory = "C:\FFmpeg\bin"
+    ffmpegVersion = "ffmpeg version 8.1"
+    avcodecDll = "avcodec-62.dll"
+    dllDirectoryRegistered = $true
 }
 $script:Passed = 0
 
@@ -135,5 +139,17 @@ Assert-Throws `
             -Probe $decodeFailure
     } `
     -MessagePattern "could not decode audio"
+
+$dllRegistrationFailure = $validProbe.PSObject.Copy()
+$dllRegistrationFailure.dllDirectoryRegistered = $false
+Assert-Throws `
+    -Name "FFmpeg DLL registration failure" `
+    -Action {
+        Assert-RuntimeProbe `
+            -ProfileName "cuda" `
+            -Profile $profile `
+            -Probe $dllRegistrationFailure
+    } `
+    -MessagePattern "DLL directory was not registered"
 
 Write-Output "RUNTIME_PROFILE_CASES_PASSED=$script:Passed"

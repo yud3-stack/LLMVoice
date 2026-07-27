@@ -44,7 +44,7 @@ from llmvoice.service import (
     read_and_plan,
 )
 from llmvoice.tts.device import resolve_device
-from llmvoice.tts.factory import create_engine
+from llmvoice.tts.factory import create_engine, engine_display_name
 from llmvoice.voices.manager import RECOMMENDED_MAX_SECONDS, VoiceManager
 
 console = Console()
@@ -175,7 +175,6 @@ def start(
 
         selected_speed = speed if speed is not None else config.default_speed
         device = resolve_device(config.device)
-        engine = create_engine(config.engine, device.kind, paths)
         estimated_seconds = estimate_speech_seconds(plan.text)
 
         render_start_summary(
@@ -187,7 +186,7 @@ def start(
             language=plan.language,
             auto_detected=plan.auto_detected,
             device=device.label,
-            engine=engine.display_name,
+            engine=engine_display_name(config.engine),
             output_path=destination,
             characters=len(plan.text),
             chunks=len(plan.chunks),
@@ -204,6 +203,7 @@ def start(
             return
 
         require_ffmpeg()
+        engine = create_engine(config.engine, device.kind, paths)
         check_synthesis_disk_space(paths.cache_dir, destination, estimated_seconds)
         if not getattr(engine, "is_model_installed", True):
             console.print(

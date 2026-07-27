@@ -199,7 +199,7 @@ function Get-ReleaseManifest {
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {
-            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.5."
+            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.6."
         }
         $uri = "https://github.com/$($script:Repository)/releases/download/v$RequestedVersion/install-manifest.json"
     }
@@ -433,6 +433,16 @@ function Assert-RuntimeProbe {
     if (-not [bool]$Probe.audioDecode) {
         Throw-InstallerError (
             "TorchCodec could not decode audio through the shared FFmpeg runtime."
+        )
+    }
+    if (
+        [string]::IsNullOrWhiteSpace([string]$Probe.ffmpegDirectory) -or
+        [string]::IsNullOrWhiteSpace([string]$Probe.ffmpegVersion) -or
+        [string]::IsNullOrWhiteSpace([string]$Probe.avcodecDll) -or
+        -not [bool]$Probe.dllDirectoryRegistered
+    ) {
+        Throw-InstallerError (
+            "The shared FFmpeg DLL directory was not registered correctly."
         )
     }
 }
@@ -968,18 +978,65 @@ function New-IsolatedRuntime {
 import importlib.metadata
 import json
 import math
+import os
+import platform
 import struct
+import subprocess
+import sys
+import traceback
 import wave
 from pathlib import Path
 
 import torch
-import torchaudio
-import torchcodec
-from torchcodec.decoders import AudioDecoder
+import llmvoice.audio.ffmpeg as ffmpeg_bootstrap
 
 audio_path = Path(__file__).with_name("validate-runtime.wav")
 sample_rate = 16000
+diagnostics = {
+    "python": platform.python_version(),
+    "torch": importlib.metadata.version("torch"),
+    "torchcodec": importlib.metadata.version("torchcodec"),
+    "ffmpegDirectory": None,
+    "ffmpegVersion": None,
+    "avcodecDll": None,
+    "dllDirectoryRegistered": False,
+}
 try:
+    ffmpeg_path, _ = ffmpeg_bootstrap.require_ffmpeg()
+    ffmpeg_directory = Path(ffmpeg_path).resolve().parent
+    avcodec_dll = next(ffmpeg_directory.glob("avcodec-*.dll"), None)
+    ffmpeg_version = subprocess.run(
+        [ffmpeg_path, "-version"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    diagnostics.update(
+        {
+            "ffmpegDirectory": str(ffmpeg_directory),
+            "ffmpegVersion": (
+                ffmpeg_version.stdout.splitlines()[0]
+                if ffmpeg_version.stdout
+                else None
+            ),
+            "avcodecDll": avcodec_dll.name if avcodec_dll else None,
+            "dllDirectoryRegistered": (
+                os.name != "nt"
+                or (
+                    ffmpeg_directory
+                    in ffmpeg_bootstrap._REGISTERED_DLL_DIRECTORIES
+                    and bool(ffmpeg_bootstrap._DLL_DIRECTORY_HANDLES)
+                )
+            ),
+        }
+    )
+
+    import torchaudio
+    import torchcodec
+    from torchcodec.decoders import AudioDecoder
+
     samples = (
         int(12000 * math.sin(2 * math.pi * 440 * index / sample_rate))
         for index in range(sample_rate)
@@ -1008,8 +1065,16 @@ try:
             and decoded.sample_rate == sample_rate
             and tuple(decoded.data.shape) == (1, sample_rate)
         ),
+        **diagnostics,
     }
     print(json.dumps(result))
+except Exception:
+    traceback.print_exc()
+    print(
+        "LLMVOICE_RUNTIME_DIAGNOSTICS=" + json.dumps(diagnostics),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
 finally:
     audio_path.unlink(missing_ok=True)
 '@
@@ -1035,6 +1100,16 @@ finally:
         -ProfileName $ProfileName `
         -Profile $profile `
         -Probe $probe
+    Write-Debug "Runtime Python: $($probe.python)"
+    Write-Debug "Runtime torch: $($probe.torch)"
+    Write-Debug "Runtime TorchCodec: $($probe.torchcodec)"
+    Write-Debug "Runtime FFmpeg directory: $($probe.ffmpegDirectory)"
+    Write-Debug "Runtime FFmpeg version: $($probe.ffmpegVersion)"
+    Write-Debug "Runtime avcodec DLL: $($probe.avcodecDll)"
+    Write-Debug (
+        "Runtime DLL directory registered: " +
+        [bool]$probe.dllDirectoryRegistered
+    )
     if ($ProfileName -eq "cpu" -and [bool]$probe.cuda) {
         Write-Warn "CPU profile was requested; CUDA will not be used by this runtime."
     }
