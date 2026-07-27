@@ -138,7 +138,7 @@ function Get-ReleaseManifest {
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {
-            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.2."
+            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.3."
         }
         $uri = "https://github.com/$($script:Repository)/releases/download/v$RequestedVersion/install-manifest.json"
     }
@@ -221,6 +221,256 @@ function Assert-Manifest {
     }
 }
 
+function New-PythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)][string]$File,
+        [string[]]$Prefix = @(),
+        [Parameter(Mandatory = $true)][string]$Source,
+        [string]$Selector = "",
+        [int]$Priority = 0
+    )
+    return [pscustomobject]@{
+        File = $File
+        Prefix = @($Prefix)
+        Source = $Source
+        Selector = $Selector
+        Priority = $Priority
+    }
+}
+
+function Add-PythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)]$Candidates,
+        [Parameter(Mandatory = $true)][hashtable]$Seen,
+        [Parameter(Mandatory = $true)][string]$File,
+        [string[]]$Prefix = @(),
+        [Parameter(Mandatory = $true)][string]$Source,
+        [string]$Selector = ""
+    )
+    if ([string]::IsNullOrWhiteSpace($File)) {
+        return
+    }
+    $key = (
+        $File.Trim().ToLowerInvariant() + [char]0 +
+        ((@($Prefix) -join [char]0).ToLowerInvariant())
+    )
+    if ($Seen.ContainsKey($key)) {
+        return
+    }
+    $Seen[$key] = $true
+    $null = $Candidates.Add(
+        (New-PythonCandidate `
+            -File $File `
+            -Prefix $Prefix `
+            -Source $Source `
+            -Selector $Selector `
+            -Priority $Candidates.Count)
+    )
+}
+
+function Get-PythonPathsFromLauncher {
+    param(
+        [Parameter(Mandatory = $true)][string]$Launcher,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Write-Debug "Trying Python runtime listing: $Description"
+    try {
+        $output = & $Launcher @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        Write-Debug "Runtime listing failed: $($_.Exception.Message)"
+        return
+    }
+    Write-Debug "Runtime listing exit code: $exitCode"
+    if ($exitCode -ne 0) {
+        return
+    }
+
+    foreach ($outputLine in @($output)) {
+        $line = ([string]$outputLine).Trim()
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        $path = $null
+        if (
+            [IO.Path]::IsPathRooted($line) -and
+            $line.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)
+        ) {
+            $path = $line
+        }
+        else {
+            # Legacy `py -0p` output is locale-independent only at the path
+            # boundary. Ignore the selector text and extract the final absolute
+            # executable path.
+            $match = [regex]::Match($line, "([A-Za-z]:\\.*\.exe)\s*$")
+            if ($match.Success) {
+                $path = $match.Groups[1].Value.Trim()
+            }
+        }
+        if ($null -ne $path) {
+            Write-Debug "Discovered Python executable: $path"
+            Write-Output $path
+        }
+    }
+}
+
+function Invoke-PythonCandidateProbe {
+    param([Parameter(Mandatory = $true)]$Candidate)
+
+    $display = $Candidate.Source
+    if (-not [string]::IsNullOrWhiteSpace([string]$Candidate.Selector)) {
+        $display += " $($Candidate.Selector)"
+    }
+    Write-Debug "Trying $display"
+
+    # Use only single-quoted Python literals. Windows PowerShell 5.1 removes
+    # embedded double quotes when forwarding a native `-c` argument.
+    $probeCode = 'import json,struct,sys; print(json.dumps({''version'':''.''.join(map(str,sys.version_info[:3])),''major'':sys.version_info[0],''minor'':sys.version_info[1],''bits'':struct.calcsize(''P'')*8,''executable'':sys.executable}))'
+    $arguments = @($Candidate.Prefix) + @("-c", $probeCode)
+    try {
+        $output = & $Candidate.File @arguments 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    catch {
+        return [pscustomobject]@{
+            Success = $false
+            ExitCode = $null
+            Reason = $_.Exception.Message
+            Probe = $null
+        }
+    }
+    Write-Debug "Probe exit code: $exitCode"
+    if ($exitCode -ne 0) {
+        $detail = (@($output) | Select-Object -Last 4) -join " "
+        if (
+            $Candidate.File -match "\\Microsoft\\WindowsApps\\python(?:3)?\.exe$"
+        ) {
+            $detail = "Microsoft Store execution alias did not launch a real interpreter. $detail"
+        }
+        return [pscustomobject]@{
+            Success = $false
+            ExitCode = $exitCode
+            Reason = $detail.Trim()
+            Probe = $null
+        }
+    }
+
+    try {
+        $jsonLine = @($output) |
+            ForEach-Object { ([string]$_).Trim() } |
+            Where-Object { $_.StartsWith("{") -and $_.EndsWith("}") } |
+            Select-Object -Last 1
+        if ([string]::IsNullOrWhiteSpace($jsonLine)) {
+            throw "Probe produced no JSON object."
+        }
+        $probe = $jsonLine | ConvertFrom-Json
+        return [pscustomobject]@{
+            Success = $true
+            ExitCode = $exitCode
+            Reason = ""
+            Probe = $probe
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            Success = $false
+            ExitCode = $exitCode
+            Reason = "Probe output was not valid JSON: $($_.Exception.Message)"
+            Probe = $null
+        }
+    }
+}
+
+function Select-PythonCandidate {
+    param(
+        [Parameter(Mandatory = $true)]$Candidates,
+        [Parameter(Mandatory = $true)][string]$Minimum,
+        [Parameter(Mandatory = $true)][string]$MaximumExclusive,
+        [scriptblock]$ProbeRunner = {
+            param($Candidate)
+            Invoke-PythonCandidateProbe -Candidate $Candidate
+        }
+    )
+
+    $minimumVersion = [version]$Minimum
+    $maximumVersion = [version]$MaximumExclusive
+    $accepted = New-Object System.Collections.Generic.List[object]
+    $acceptedExecutables = @{}
+
+    foreach ($candidate in $Candidates) {
+        $result = & $ProbeRunner $candidate
+        if (-not [bool]$result.Success) {
+            Write-Debug "Rejected $($candidate.Source) $($candidate.Selector)"
+            Write-Debug "Reason: $($result.Reason)"
+            continue
+        }
+
+        try {
+            $probe = $result.Probe
+            $foundVersion = [version]"$($probe.major).$($probe.minor)"
+            $fullVersion = [version]([string]$probe.version)
+            $bits = [int]$probe.bits
+            $executable = [string]$probe.executable
+            Write-Debug "Found Python $fullVersion $bits-bit"
+            Write-Debug "Executable: $executable"
+
+            if ($foundVersion -lt $minimumVersion) {
+                throw "Python $fullVersion is older than the supported minimum $Minimum."
+            }
+            if ($foundVersion -ge $maximumVersion) {
+                throw "Python $fullVersion is not below $MaximumExclusive."
+            }
+            if ($bits -ne 64) {
+                throw "Python $fullVersion is $bits-bit; 64-bit is required."
+            }
+            if (
+                -not [IO.Path]::IsPathRooted($executable) -or
+                -not $executable.EndsWith(
+                    ".exe",
+                    [StringComparison]::OrdinalIgnoreCase
+                ) -or
+                -not (Test-Path -LiteralPath $executable -PathType Leaf)
+            ) {
+                throw "Probe did not return a real absolute Python executable path."
+            }
+            $resolvedExecutable = [IO.Path]::GetFullPath($executable)
+            $executableKey = $resolvedExecutable.ToLowerInvariant()
+            if (-not $acceptedExecutables.ContainsKey($executableKey)) {
+                $acceptedExecutables[$executableKey] = $true
+                $null = $accepted.Add([pscustomobject]@{
+                    File = $resolvedExecutable
+                    Prefix = @()
+                    Version = [string]$probe.version
+                    VersionObject = $fullVersion
+                    Executable = $resolvedExecutable
+                    Source = [string]$candidate.Source
+                    Selector = [string]$candidate.Selector
+                    Priority = [int]$candidate.Priority
+                })
+            }
+            Write-Debug "Accepted candidate"
+        }
+        catch {
+            Write-Debug "Rejected $($candidate.Source) $($candidate.Selector)"
+            Write-Debug "Reason: $($_.Exception.Message)"
+        }
+    }
+    if ($accepted.Count -gt 0) {
+        $selected = $accepted |
+            Sort-Object `
+                @{ Expression = { $_.VersionObject }; Descending = $true }, `
+                @{ Expression = { $_.Priority }; Ascending = $true } |
+            Select-Object -First 1
+        Write-Debug "Selected highest supported Python $($selected.Version)"
+        Write-Debug "Selected executable: $($selected.Executable)"
+        return $selected
+    }
+    return $null
+}
+
 function Get-PythonCandidate {
     param(
         [Parameter(Mandatory = $true)][string]$Minimum,
@@ -230,47 +480,90 @@ function Get-PythonCandidate {
     $minimumVersion = [version]$Minimum
     $maximumVersion = [version]$MaximumExclusive
     $candidates = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
     $launcher = Get-CommandPath "py.exe"
-    if ($null -ne $launcher -and $minimumVersion.Major -eq $maximumVersion.Major) {
-        for ($minor = $maximumVersion.Minor - 1; $minor -ge $minimumVersion.Minor; $minor--) {
-            $candidates.Add([pscustomobject]@{
-                File = $launcher
-                Prefix = @("-$($minimumVersion.Major).$minor")
-            })
+
+    $automaticInstallWasSet = Test-Path Env:PYTHON_MANAGER_AUTOMATIC_INSTALL
+    $previousAutomaticInstall = $env:PYTHON_MANAGER_AUTOMATIC_INSTALL
+    $env:PYTHON_MANAGER_AUTOMATIC_INSTALL = "false"
+    try {
+        if ($null -ne $launcher -and $minimumVersion.Major -eq $maximumVersion.Major) {
+            for (
+                $minor = $maximumVersion.Minor - 1;
+                $minor -ge $minimumVersion.Minor;
+                $minor--
+            ) {
+                $versionSelector = "$($minimumVersion.Major).$minor"
+                Add-PythonCandidate `
+                    -Candidates $candidates `
+                    -Seen $seen `
+                    -File $launcher `
+                    -Prefix @("-$versionSelector") `
+                    -Source "py.exe" `
+                    -Selector "-$versionSelector"
+                Add-PythonCandidate `
+                    -Candidates $candidates `
+                    -Seen $seen `
+                    -File $launcher `
+                    -Prefix @("-V:$versionSelector") `
+                    -Source "py.exe" `
+                    -Selector "-V:$versionSelector"
+            }
+
+            foreach ($path in @(
+                Get-PythonPathsFromLauncher `
+                    -Launcher $launcher `
+                    -Arguments @("list", "--format=exe") `
+                    -Description "py list --format=exe"
+            )) {
+                Add-PythonCandidate `
+                    -Candidates $candidates `
+                    -Seen $seen `
+                    -File ([string]$path) `
+                    -Source "py list --format=exe"
+            }
+            foreach ($path in @(
+                Get-PythonPathsFromLauncher `
+                    -Launcher $launcher `
+                    -Arguments @("-0p") `
+                    -Description "py -0p"
+            )) {
+                Add-PythonCandidate `
+                    -Candidates $candidates `
+                    -Seen $seen `
+                    -File ([string]$path) `
+                    -Source "py -0p"
+            }
+        }
+
+        foreach ($name in @("python.exe", "python3.exe")) {
+            $path = Get-CommandPath $name
+            if ($null -ne $path) {
+                Add-PythonCandidate `
+                    -Candidates $candidates `
+                    -Seen $seen `
+                    -File $path `
+                    -Source $name
+            }
+        }
+
+        $selected = Select-PythonCandidate `
+            -Candidates $candidates `
+            -Minimum $Minimum `
+            -MaximumExclusive $MaximumExclusive
+        if ($null -ne $selected) {
+            return $selected
         }
     }
-    foreach ($name in @("python.exe", "python3.exe")) {
-        $path = Get-CommandPath $name
-        if ($null -ne $path) {
-            $candidates.Add([pscustomobject]@{ File = $path; Prefix = @() })
+    finally {
+        if ($automaticInstallWasSet) {
+            $env:PYTHON_MANAGER_AUTOMATIC_INSTALL = $previousAutomaticInstall
+        }
+        else {
+            Remove-Item Env:PYTHON_MANAGER_AUTOMATIC_INSTALL -ErrorAction SilentlyContinue
         }
     }
 
-    $probeCode = 'import json,struct,sys; print(json.dumps({"version":".".join(map(str,sys.version_info[:3])),"major":sys.version_info[0],"minor":sys.version_info[1],"bits":struct.calcsize("P")*8,"executable":sys.executable}))'
-    foreach ($candidate in $candidates) {
-        try {
-            $arguments = @($candidate.Prefix) + @("-c", $probeCode)
-            $raw = Invoke-Native -FilePath $candidate.File -Arguments $arguments -Capture
-            $probe = $raw | ConvertFrom-Json
-            $foundVersion = [version]"$($probe.major).$($probe.minor)"
-            if (
-                $foundVersion -ge $minimumVersion -and
-                $foundVersion -lt $maximumVersion -and
-                [int]$probe.bits -eq 64 -and
-                (Test-Path -LiteralPath ([string]$probe.executable) -PathType Leaf)
-            ) {
-                return [pscustomobject]@{
-                    File = [string]$candidate.File
-                    Prefix = @($candidate.Prefix)
-                    Version = [string]$probe.version
-                    Executable = [string]$probe.executable
-                }
-            }
-        }
-        catch {
-            Write-Debug "Python candidate rejected: $($candidate.File) $($_.Exception.Message)"
-        }
-    }
     $lastSupportedMinor = ([version]$MaximumExclusive).Minor - 1
     Throw-InstallerError (
         "Python $Minimum-$((([version]$MaximumExclusive).Major)).$lastSupportedMinor " +

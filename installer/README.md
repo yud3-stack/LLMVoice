@@ -30,7 +30,7 @@ or arbitrary downloaded script execution are used.
 |-- runtime\
 |   |-- install-state.json
 |   `-- versions\
-|       `-- 0.1.2-cuda-<id>\
+|       `-- 0.1.3-cuda-<id>\
 |           `-- venv\
 |-- bin\
 |   `-- llmvoice.cmd
@@ -68,7 +68,7 @@ Options:
 .\install.ps1 -Runtime auto
 .\install.ps1 -Runtime cuda
 .\install.ps1 -Runtime cpu
-.\install.ps1 -Version 0.1.2
+.\install.ps1 -Version 0.1.3
 .\install.ps1 -Force
 .\install.ps1 -Debug
 ```
@@ -79,9 +79,14 @@ unless `-Force` is supplied.
 ## Python and FFmpeg
 
 Python compatibility comes from the release manifest generated from
-`project.requires-python`. The installer searches the Windows `py` launcher,
-then `python.exe` and `python3.exe`, and validates the real interpreter version,
-path, and 64-bit architecture. It does not install Python automatically.
+`project.requires-python`. The installer tries supported selectors through the
+Windows `py` launcher, discovers runtimes through modern
+`py list --format=exe` and legacy `py -0p`, then falls back to `python.exe` and
+`python3.exe`. Every candidate must execute a JSON probe that validates its
+version, real absolute executable path, and 64-bit architecture. A Microsoft
+Store execution alias is never trusted merely because it exists. Runtime
+auto-installation is disabled during discovery, so probing cannot install
+Python. The installer itself does not install Python automatically.
 
 FFmpeg and FFprobe must already be available. The recommended shared build is:
 
@@ -121,6 +126,8 @@ intend to remove voices, downloaded models, caches, and configuration.
 ## Troubleshooting
 
 - Run with `-Debug` for PowerShell failure details.
+- `-Debug` reports each Python source, launcher selector, probe exit code,
+  discovered version/path, and the reason a candidate was rejected.
 - A checksum mismatch always aborts installation.
 - If CUDA validation fails, update the NVIDIA driver or install the CPU profile
   explicitly.
