@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "LLMVoice"
-version = "0.1.4"
+version = "0.1.5"
 description = "Offline, local-first long-form voice cloning CLI for Windows"
 readme = "README.md"
 requires-python = ">=3.11,<3.15"
@@ -50,24 +50,33 @@ include = [
 ]
 
 [tool.llmvoice.release]
-schema-version = 1
+schema-version = 2
 repository = "yud3-stack/LLMVoice"
 
-[tool.llmvoice.release.runtime-profiles.cuda]
+[[tool.llmvoice.release.runtime-profiles.cuda.groups]]
+name = "compute"
 index-url = "https://download.pytorch.org/whl/cu130"
 packages = [
   "torch==2.11.0+cu130",
   "torchaudio==2.11.0+cu130",
-  "torchcodec==0.13.0+cu130",
 ]
+no-dependencies = false
 
-[tool.llmvoice.release.runtime-profiles.cpu]
+[[tool.llmvoice.release.runtime-profiles.cuda.groups]]
+name = "codec"
+index-url = "https://download.pytorch.org/whl/cpu"
+packages = ["torchcodec==0.13.0+cpu"]
+no-dependencies = true
+
+[[tool.llmvoice.release.runtime-profiles.cpu.groups]]
+name = "runtime"
 index-url = "https://download.pytorch.org/whl/cpu"
 packages = [
-  "torch==2.11.0",
-  "torchaudio==2.11.0",
-  "torchcodec==0.13.0",
+  "torch==2.11.0+cpu",
+  "torchaudio==2.11.0+cpu",
+  "torchcodec==0.13.0+cpu",
 ]
+no-dependencies = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -23,6 +23,8 @@ jobs:
             -InstallerPath .\installer\install.ps1
           .\tests\powershell\test_native_invocation.ps1 `
             -InstallerPath .\installer\install.ps1
+          .\tests\powershell\test_runtime_profiles.ps1 `
+            -InstallerPath .\installer\install.ps1
 
   quality:
     name: Unit tests and build

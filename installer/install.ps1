@@ -199,7 +199,7 @@ function Get-ReleaseManifest {
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {
-            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.4."
+            Throw-InstallerError "Invalid version '$RequestedVersion'. Use latest or a version such as 0.1.5."
         }
         $uri = "https://github.com/$($script:Repository)/releases/download/v$RequestedVersion/install-manifest.json"
     }
@@ -222,7 +222,7 @@ function Assert-Manifest {
         [Parameter(Mandatory = $true)][string]$RequestedVersion
     )
 
-    if ([int]$Manifest.schemaVersion -ne 1) {
+    if ([int]$Manifest.schemaVersion -ne 2) {
         Throw-InstallerError "Unsupported installer manifest schema."
     }
     if ([string]$Manifest.repository -ne $script:Repository) {
@@ -255,16 +255,105 @@ function Assert-Manifest {
             Throw-InstallerError "Manifest is missing the $profileName runtime profile."
         }
         $profile = $profileProperty.Value
-        if ([string]$profile.indexUrl -notmatch "^https://download\.pytorch\.org/whl/[A-Za-z0-9]+$") {
-            Throw-InstallerError "Manifest contains an unsafe PyTorch index URL."
+        $groups = @($profile.groups)
+        if ($groups.Count -eq 0) {
+            Throw-InstallerError "Manifest runtime profile contains no package groups."
         }
-        $profilePackages = @($profile.packages)
-        if ($profilePackages.Count -eq 0) {
-            Throw-InstallerError "Manifest runtime profile contains no packages."
+        $groupNames = @{}
+        $packageLocations = @{}
+        foreach ($group in $groups) {
+            $groupName = [string]$group.name
+            if (
+                $groupName -notmatch "^[a-z][a-z0-9-]*$" -or
+                $groupNames.ContainsKey($groupName)
+            ) {
+                Throw-InstallerError "Manifest contains an invalid runtime group."
+            }
+            $groupNames[$groupName] = $true
+            $indexUrl = [string]$group.indexUrl
+            if (
+                $indexUrl -notin @(
+                    "https://download.pytorch.org/whl/cu130",
+                    "https://download.pytorch.org/whl/cpu"
+                )
+            ) {
+                Throw-InstallerError "Manifest contains an unsafe PyTorch index URL."
+            }
+            $noDependenciesProperty =
+                $group.PSObject.Properties["noDependencies"]
+            if (
+                $null -eq $noDependenciesProperty -or
+                $noDependenciesProperty.Value -isnot [bool]
+            ) {
+                Throw-InstallerError "Manifest runtime group dependency mode is invalid."
+            }
+            $groupPackages = @($group.packages)
+            if ($groupPackages.Count -eq 0) {
+                Throw-InstallerError "Manifest runtime group contains no packages."
+            }
+            foreach ($package in $groupPackages) {
+                $requirement = [string]$package
+                if ($requirement -notmatch "^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.+-]+$") {
+                    Throw-InstallerError "Manifest contains an invalid runtime package."
+                }
+                $packageName = $requirement.Split("==")[0].ToLowerInvariant()
+                if ($packageLocations.ContainsKey($packageName)) {
+                    Throw-InstallerError "Manifest repeats a runtime package."
+                }
+                $packageLocations[$packageName] = [pscustomobject]@{
+                    Group = $groupName
+                    IndexUrl = $indexUrl
+                    NoDependencies = [bool]$noDependenciesProperty.Value
+                }
+            }
         }
-        foreach ($package in $profilePackages) {
-            if ([string]$package -notmatch "^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.+-]+$") {
-                Throw-InstallerError "Manifest contains an invalid runtime package."
+        if (
+            $packageLocations.Count -ne 3 -or
+            -not $packageLocations.ContainsKey("torch") -or
+            -not $packageLocations.ContainsKey("torchaudio") -or
+            -not $packageLocations.ContainsKey("torchcodec")
+        ) {
+            Throw-InstallerError (
+                "Manifest runtime profile must contain torch, torchaudio, " +
+                "and torchcodec exactly once."
+            )
+        }
+        if ($profileName -eq "cuda") {
+            foreach ($computePackage in @("torch", "torchaudio")) {
+                $location = $packageLocations[$computePackage]
+                if (
+                    $location.Group -ne "compute" -or
+                    $location.IndexUrl -ne "https://download.pytorch.org/whl/cu130" -or
+                    $location.NoDependencies
+                ) {
+                    Throw-InstallerError (
+                        "CUDA compute packages must use the cu130 index."
+                    )
+                }
+            }
+            $codecLocation = $packageLocations["torchcodec"]
+            if (
+                $codecLocation.Group -ne "codec" -or
+                $codecLocation.IndexUrl -ne "https://download.pytorch.org/whl/cpu" -or
+                -not $codecLocation.NoDependencies
+            ) {
+                Throw-InstallerError (
+                    "CUDA TorchCodec must use the isolated CPU codec group."
+                )
+            }
+        }
+        else {
+            foreach ($packageName in @("torch", "torchaudio", "torchcodec")) {
+                $location = $packageLocations[$packageName]
+                if (
+                    $location.Group -ne "runtime" -or
+                    $location.IndexUrl -ne "https://download.pytorch.org/whl/cpu" -or
+                    $location.NoDependencies
+                ) {
+                    Throw-InstallerError (
+                        "CPU runtime packages must use the CPU index."
+                    )
+                }
             }
         }
     }
@@ -279,6 +368,72 @@ function Assert-Manifest {
         if ([string]$dependency -notmatch "^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.+-]+$") {
             Throw-InstallerError "Manifest contains an invalid application dependency."
         }
+    }
+}
+
+function Get-RuntimeRequirementVersion {
+    param(
+        [Parameter(Mandatory = $true)]$Profile,
+        [Parameter(Mandatory = $true)][string]$PackageName
+    )
+
+    foreach ($group in @($Profile.groups)) {
+        foreach ($requirement in @($group.packages)) {
+            $parts = ([string]$requirement).Split(
+                @("=="),
+                2,
+                [StringSplitOptions]::None
+            )
+            if (
+                $parts.Count -eq 2 -and
+                $parts[0].Equals(
+                    $PackageName,
+                    [StringComparison]::OrdinalIgnoreCase
+                )
+            ) {
+                return $parts[1]
+            }
+        }
+    }
+    Throw-InstallerError "Runtime profile is missing package: $PackageName"
+}
+
+function Assert-RuntimeProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProfileName,
+        [Parameter(Mandatory = $true)]$Profile,
+        [Parameter(Mandatory = $true)]$Probe
+    )
+
+    foreach ($packageName in @("torch", "torchaudio", "torchcodec")) {
+        $expectedVersion = Get-RuntimeRequirementVersion `
+            -Profile $Profile `
+            -PackageName $packageName
+        $actualVersion = [string]$Probe.$packageName
+        if ($actualVersion -ne $expectedVersion) {
+            Throw-InstallerError (
+                "Runtime package version mismatch for $packageName.`n" +
+                "Expected: $expectedVersion`n" +
+                "Actual  : $actualVersion"
+            )
+        }
+    }
+    if ($ProfileName -eq "cuda" -and -not [bool]$Probe.cuda) {
+        Throw-InstallerError (
+            "CUDA-enabled PyTorch was installed, but PyTorch cannot access the NVIDIA GPU.`n`n" +
+            "Review the NVIDIA driver and run the installer again."
+        )
+    }
+    if (
+        $ProfileName -eq "cuda" -and
+        [string]::IsNullOrWhiteSpace([string]$Probe.gpu)
+    ) {
+        Throw-InstallerError "CUDA is available, but no GPU name was reported."
+    }
+    if (-not [bool]$Probe.audioDecode) {
+        Throw-InstallerError (
+            "TorchCodec could not decode audio through the shared FFmpeg runtime."
+        )
     }
 }
 
@@ -765,13 +920,27 @@ function New-IsolatedRuntime {
     )
 
     $profile = $Manifest.runtimeProfiles.PSObject.Properties[$ProfileName].Value
-    Write-Host "Installing $($ProfileName.ToUpperInvariant()) runtime dependencies..."
-    $runtimeArguments = @(
-        "-m", "pip", "install", "--disable-pip-version-check",
-        "--index-url", [string]$profile.indexUrl
-    ) + @($profile.packages | ForEach-Object { [string]$_ })
-    Invoke-Native -FilePath $venvPython -Arguments $runtimeArguments
-    Write-Ok "PyTorch runtime installed"
+    foreach ($group in @($profile.groups)) {
+        $groupName = [string]$group.name
+        $displayName = switch ($groupName) {
+            "compute" { "CUDA compute runtime" }
+            "codec" { "media codec runtime" }
+            default { "$($ProfileName.ToUpperInvariant()) runtime" }
+        }
+        Write-Host "Installing $displayName..."
+        $runtimeArguments = @(
+            "-m", "pip", "install", "--disable-pip-version-check"
+        )
+        if ([bool]$group.noDependencies) {
+            $runtimeArguments += "--no-deps"
+        }
+        $runtimeArguments += @("--index-url", [string]$group.indexUrl)
+        $runtimeArguments += @(
+            $group.packages | ForEach-Object { [string]$_ }
+        )
+        Invoke-Native -FilePath $venvPython -Arguments $runtimeArguments
+        Write-Ok "$displayName installed"
+    }
 
     Write-Host "Installing local TTS dependencies..."
     $applicationArguments = @(
@@ -787,20 +956,89 @@ function New-IsolatedRuntime {
     )
     Write-Ok "LLMVoice installed"
 
+    Write-Host "Checking installed dependencies..."
+    Invoke-Native -FilePath $venvPython -Arguments @(
+        "-m", "pip", "check"
+    )
+    Write-Ok "Dependencies verified"
+
     Write-Host "Validating runtime..."
-    $runtimeProbe = 'import json,importlib.metadata,torch,torchcodec; print(json.dumps({"torch":torch.__version__,"torchcodec":importlib.metadata.version("torchcodec"),"cuda":bool(torch.cuda.is_available()),"gpu":torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))'
-    $probe = Invoke-Native -FilePath $venvPython -Arguments @("-c", $runtimeProbe) -Capture |
-        ConvertFrom-Json
-    if ($ProfileName -eq "cuda" -and -not [bool]$probe.cuda) {
-        Throw-InstallerError (
-            "CUDA-enabled PyTorch was installed, but PyTorch cannot access the NVIDIA GPU.`n`n" +
-            "Review the NVIDIA driver and run the installer again."
-        )
+    $runtimeProbePath = Join-Path $script:NewRuntimeRoot "validate-runtime.py"
+    $runtimeProbeSource = @'
+import importlib.metadata
+import json
+import math
+import struct
+import wave
+from pathlib import Path
+
+import torch
+import torchaudio
+import torchcodec
+from torchcodec.decoders import AudioDecoder
+
+audio_path = Path(__file__).with_name("validate-runtime.wav")
+sample_rate = 16000
+try:
+    samples = (
+        int(12000 * math.sin(2 * math.pi * 440 * index / sample_rate))
+        for index in range(sample_rate)
+    )
+    with wave.open(str(audio_path), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(sample_rate)
+        audio.writeframes(b"".join(struct.pack("<h", sample) for sample in samples))
+
+    waveform, torchaudio_rate = torchaudio.load(str(audio_path))
+    decoded = AudioDecoder(str(audio_path)).get_all_samples()
+    result = {
+        "torch": importlib.metadata.version("torch"),
+        "torchaudio": importlib.metadata.version("torchaudio"),
+        "torchcodec": importlib.metadata.version("torchcodec"),
+        "cuda": bool(torch.cuda.is_available()),
+        "gpu": (
+            torch.cuda.get_device_name(0)
+            if torch.cuda.is_available()
+            else None
+        ),
+        "audioDecode": (
+            torchaudio_rate == sample_rate
+            and tuple(waveform.shape) == (1, sample_rate)
+            and decoded.sample_rate == sample_rate
+            and tuple(decoded.data.shape) == (1, sample_rate)
+        ),
     }
+    print(json.dumps(result))
+finally:
+    audio_path.unlink(missing_ok=True)
+'@
+    [IO.File]::WriteAllText(
+        $runtimeProbePath,
+        $runtimeProbeSource,
+        [Text.UTF8Encoding]::new($false)
+    )
+    try {
+        $probe = Invoke-Native `
+            -FilePath $venvPython `
+            -Arguments @($runtimeProbePath) `
+            -Capture |
+            ConvertFrom-Json
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $runtimeProbePath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+    Assert-RuntimeProbe `
+        -ProfileName $ProfileName `
+        -Profile $profile `
+        -Probe $probe
     if ($ProfileName -eq "cpu" -and [bool]$probe.cuda) {
         Write-Warn "CPU profile was requested; CUDA will not be used by this runtime."
     }
-    Write-Ok "Runtime imports verified"
+    Write-Ok "Runtime imports and audio decoding verified"
 
     if (-not (Test-Path -LiteralPath $llmvoiceExe -PathType Leaf)) {
         Throw-InstallerError "The LLMVoice console entry point was not installed."

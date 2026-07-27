@@ -30,7 +30,7 @@ or arbitrary downloaded script execution are used.
 |-- runtime\
 |   |-- install-state.json
 |   `-- versions\
-|       `-- 0.1.4-cuda-<id>\
+|       `-- 0.1.5-cuda-<id>\
 |           `-- venv\
 |-- bin\
 |   `-- llmvoice.cmd
@@ -68,7 +68,7 @@ Options:
 .\install.ps1 -Runtime auto
 .\install.ps1 -Runtime cuda
 .\install.ps1 -Runtime cpu
-.\install.ps1 -Version 0.1.4
+.\install.ps1 -Version 0.1.5
 .\install.ps1 -Force
 .\install.ps1 -Debug
 ```
@@ -102,6 +102,9 @@ Runtime package versions and official PyTorch index URLs are generated from
 `pyproject.toml`; the installer contains no package-version constants. Automatic
 selection uses `nvidia-smi`, but a detected GPU is not considered sufficient:
 the isolated runtime must also report `torch.cuda.is_available() == True`.
+The Windows CUDA profile installs CUDA-enabled PyTorch compute packages and the
+CPU-only TorchCodec media runtime from separate, exact indexes. This avoids a
+CUDA Toolkit dependency for media decoding while preserving CUDA inference.
 There is no silent fallback from CUDA to CPU.
 
 ## Upgrade and recovery

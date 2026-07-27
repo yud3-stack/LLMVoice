@@ -68,7 +68,7 @@ Installer options include:
 .\install.ps1 -Runtime auto
 .\install.ps1 -Runtime cuda
 .\install.ps1 -Runtime cpu
-.\install.ps1 -Version 0.1.4
+.\install.ps1 -Version 0.1.5
 .\install.ps1 -Force
 .\install.ps1 -Debug
 ```
@@ -107,13 +107,14 @@ wheel. Obtain the current command from the
 The verified Windows CUDA 13.0 combination used during development is:
 
 ```cmd
-python -m pip install torch==2.11.0+cu130 torchaudio==2.11.0+cu130 torchcodec==0.13.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install torch==2.11.0+cu130 torchaudio==2.11.0+cu130 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install torchcodec==0.13.0+cpu --no-deps --index-url https://download.pytorch.org/whl/cpu
 ```
 
 CPU-only alternative:
 
 ```cmd
-python -m pip install torch torchaudio torchcodec --index-url https://download.pytorch.org/whl/cpu
+python -m pip install torch==2.11.0+cpu torchaudio==2.11.0+cpu torchcodec==0.13.0+cpu --index-url https://download.pytorch.org/whl/cpu
 ```
 
 Install LLMVoice and XTTS from the working tree:
@@ -334,9 +335,9 @@ Run the remaining release checks:
 python -m compileall llmvoice
 python -m pip check
 python -m build
-python scripts\release.py validate-tag --tag v0.1.4
-python scripts\release.py prepare --tag v0.1.4 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
-python scripts\release.py validate --tag v0.1.4 --assets-dir release-assets
+python scripts\release.py validate-tag --tag v0.1.5
+python scripts\release.py prepare --tag v0.1.5 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
+python scripts\release.py validate --tag v0.1.5 --assets-dir release-assets
 ```
 
 Integration tests generate small synthetic WAV files and verify:

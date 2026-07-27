@@ -34,16 +34,26 @@ version = "{release_version}"
 requires-python = ">=3.11,<3.15"
 
 [tool.llmvoice.release]
-schema-version = 1
+schema-version = 2
 repository = "yud3-stack/LLMVoice"
 
-[tool.llmvoice.release.runtime-profiles.cuda]
+[[tool.llmvoice.release.runtime-profiles.cuda.groups]]
+name = "compute"
 index-url = "https://download.pytorch.org/whl/cu130"
-packages = ["torch==2.11.0+cu130", "torchaudio==2.11.0+cu130", "torchcodec==0.13.0+cu130"]
+packages = ["torch==2.11.0+cu130", "torchaudio==2.11.0+cu130"]
+no-dependencies = false
 
-[tool.llmvoice.release.runtime-profiles.cpu]
+[[tool.llmvoice.release.runtime-profiles.cuda.groups]]
+name = "codec"
 index-url = "https://download.pytorch.org/whl/cpu"
-packages = ["torch==2.11.0", "torchaudio==2.11.0", "torchcodec==0.13.0"]
+packages = ["torchcodec==0.13.0+cpu"]
+no-dependencies = true
+
+[[tool.llmvoice.release.runtime-profiles.cpu.groups]]
+name = "runtime"
+index-url = "https://download.pytorch.org/whl/cpu"
+packages = ["torch==2.11.0+cpu", "torchaudio==2.11.0+cpu", "torchcodec==0.13.0+cpu"]
+no-dependencies = false
 """.strip()
         + "\n",
         encoding="utf-8",
@@ -131,7 +141,7 @@ def test_wheel_detection_checksum_and_manifest_schema(tmp_path) -> None:
 
     assert found.wheel == wheel
     assert found.sdist == sdist
-    assert manifest["schemaVersion"] == 1
+    assert manifest["schemaVersion"] == 2
     assert manifest["version"] == "1.2.3"
     assert manifest["tag"] == "v1.2.3"
     assert manifest["wheel"]["sha256"] == sha256_file(wheel)
@@ -142,6 +152,75 @@ def test_wheel_detection_checksum_and_manifest_schema(tmp_path) -> None:
         "coqui-tts==0.27.5",
         "transformers==4.57.6",
     ]
+
+
+def test_runtime_profile_indexes_are_explicit_and_deterministic(tmp_path) -> None:
+    _project(tmp_path)
+    wheel, sdist = _artifacts(tmp_path)
+    config = load_project_config(tmp_path)
+    manifest = build_manifest(config, wheel, sdist)
+    second_manifest = build_manifest(config, wheel, sdist)
+
+    assert manifest == second_manifest
+    cuda_groups = {
+        group["name"]: group
+        for group in manifest["runtimeProfiles"]["cuda"]["groups"]
+    }
+    assert cuda_groups["compute"] == {
+        "name": "compute",
+        "indexUrl": "https://download.pytorch.org/whl/cu130",
+        "packages": [
+            "torch==2.11.0+cu130",
+            "torchaudio==2.11.0+cu130",
+        ],
+        "noDependencies": False,
+    }
+    assert cuda_groups["codec"] == {
+        "name": "codec",
+        "indexUrl": "https://download.pytorch.org/whl/cpu",
+        "packages": ["torchcodec==0.13.0+cpu"],
+        "noDependencies": True,
+    }
+    cpu_groups = manifest["runtimeProfiles"]["cpu"]["groups"]
+    assert cpu_groups == [
+        {
+            "name": "runtime",
+            "indexUrl": "https://download.pytorch.org/whl/cpu",
+            "packages": [
+                "torch==2.11.0+cpu",
+                "torchaudio==2.11.0+cpu",
+                "torchcodec==0.13.0+cpu",
+            ],
+            "noDependencies": False,
+        }
+    ]
+
+
+def test_unsafe_or_misassigned_runtime_indexes_are_rejected(tmp_path) -> None:
+    _project(tmp_path)
+    metadata = tmp_path / "pyproject.toml"
+    original = metadata.read_text(encoding="utf-8")
+
+    metadata.write_text(
+        original.replace(
+            "https://download.pytorch.org/whl/cu130",
+            "https://packages.example.invalid/cu130",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReleaseError, match="Unsafe PyTorch index"):
+        load_project_config(tmp_path)
+
+    metadata.write_text(
+        original.replace(
+            'name = "codec"\nindex-url = "https://download.pytorch.org/whl/cpu"',
+            'name = "codec"\nindex-url = "https://download.pytorch.org/whl/cu130"',
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReleaseError, match="TorchCodec"):
+        load_project_config(tmp_path)
 
 
 def test_forbidden_audio_or_model_artifact_is_rejected(tmp_path) -> None:
@@ -206,6 +285,12 @@ def test_installer_and_release_workflow_security_invariants() -> None:
     assert "releases/latest/download/install-manifest.json" in installer
     assert "& llmvoice" not in installer
     assert 'Invoke-Native -FilePath $llmvoiceExe -Arguments @("doctor")' in installer
+    assert "Runtime package version mismatch for $packageName" in installer
+    assert "import torchcodec" in installer
+    assert "AudioDecoder" in installer
+    assert 'if ($ProfileName -eq "cuda" -and -not [bool]$Probe.cuda)' in installer
+    assert "CUDA-enabled PyTorch was installed" in installer
+    assert "silent fallback" not in installer.lower()
     assert 'tags:' in workflow
     assert '"v*"' in workflow
     assert "contents: write" in workflow

@@ -16,6 +16,10 @@ from typing import Any, Sequence
 
 TAG_PATTERN = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$")
 PINNED_REQUIREMENT = re.compile(r"^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.+-]+$")
+ALLOWED_RUNTIME_INDEXES = {
+    "https://download.pytorch.org/whl/cpu",
+    "https://download.pytorch.org/whl/cu130",
+}
 FORBIDDEN_SUFFIXES = {
     ".aac",
     ".bin",
@@ -118,22 +122,123 @@ def load_project_config(project_root: Path) -> ProjectReleaseConfig:
     profiles = release["runtime-profiles"]
     schema_version = int(release["schema-version"])
     repository = str(release["repository"])
-    if schema_version != 1:
-        raise ReleaseError("Only installer manifest schemaVersion 1 is supported.")
+    if schema_version != 2:
+        raise ReleaseError("Only installer manifest schemaVersion 2 is supported.")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ReleaseError("Release repository must be a safe owner/name GitHub slug.")
     if set(profiles) != {"cuda", "cpu"}:
         raise ReleaseError("Runtime profiles must contain exactly cuda and cpu.")
+    normalized_profiles: dict[str, dict[str, Any]] = {}
     for profile_name in ("cuda", "cpu"):
-        if profile_name not in profiles:
-            raise ReleaseError(f"Missing runtime profile: {profile_name}")
-        profile = profiles[profile_name]
-        index_url = str(profile.get("index-url", ""))
-        if not index_url.startswith("https://download.pytorch.org/whl/"):
-            raise ReleaseError(f"Unsafe PyTorch index URL for profile {profile_name}.")
-        packages = list(profile.get("packages", []))
-        if not packages or any(not PINNED_REQUIREMENT.fullmatch(item) for item in packages):
-            raise ReleaseError(f"Runtime profile {profile_name} must use exact pins.")
+        groups = list(profiles[profile_name].get("groups", []))
+        if not groups:
+            raise ReleaseError(f"Runtime profile {profile_name} contains no groups.")
+        normalized_groups: list[dict[str, Any]] = []
+        package_locations: dict[str, tuple[str, str, bool]] = {}
+        group_names: set[str] = set()
+        for group in groups:
+            if set(group) != {
+                "name",
+                "index-url",
+                "packages",
+                "no-dependencies",
+            }:
+                raise ReleaseError(
+                    f"Runtime profile {profile_name} group fields are invalid."
+                )
+            group_name = str(group["name"])
+            if (
+                not re.fullmatch(r"[a-z][a-z0-9-]*", group_name)
+                or group_name in group_names
+            ):
+                raise ReleaseError(
+                    f"Runtime profile {profile_name} has an invalid group name."
+                )
+            group_names.add(group_name)
+            index_url = str(group["index-url"])
+            if index_url not in ALLOWED_RUNTIME_INDEXES:
+                raise ReleaseError(
+                    f"Unsafe PyTorch index URL for profile {profile_name}."
+                )
+            packages = list(group["packages"])
+            if not packages or any(
+                not PINNED_REQUIREMENT.fullmatch(item) for item in packages
+            ):
+                raise ReleaseError(
+                    f"Runtime profile {profile_name} must use exact pins."
+                )
+            no_dependencies = group["no-dependencies"]
+            if not isinstance(no_dependencies, bool):
+                raise ReleaseError(
+                    f"Runtime profile {profile_name} no-dependencies must be boolean."
+                )
+            for requirement in packages:
+                package_name = requirement.partition("==")[0].lower()
+                if package_name in package_locations:
+                    raise ReleaseError(
+                        f"Runtime profile {profile_name} repeats {package_name}."
+                    )
+                package_locations[package_name] = (
+                    group_name,
+                    index_url,
+                    no_dependencies,
+                )
+            normalized_groups.append(
+                {
+                    "name": group_name,
+                    "indexUrl": index_url,
+                    "packages": packages,
+                    "noDependencies": no_dependencies,
+                }
+            )
+
+        expected_packages = {"torch", "torchaudio", "torchcodec"}
+        if set(package_locations) != expected_packages:
+            raise ReleaseError(
+                f"Runtime profile {profile_name} must install torch, torchaudio, "
+                "and torchcodec exactly once."
+            )
+        if profile_name == "cuda":
+            if group_names != {"compute", "codec"}:
+                raise ReleaseError(
+                    "CUDA runtime profile must contain compute and codec groups."
+                )
+            compute = {
+                package_locations["torch"],
+                package_locations["torchaudio"],
+            }
+            if compute != {
+                (
+                    "compute",
+                    "https://download.pytorch.org/whl/cu130",
+                    False,
+                )
+            }:
+                raise ReleaseError(
+                    "CUDA compute packages must use the cu130 index with dependencies."
+                )
+            if package_locations["torchcodec"] != (
+                "codec",
+                "https://download.pytorch.org/whl/cpu",
+                True,
+            ):
+                raise ReleaseError(
+                    "CUDA TorchCodec must use the CPU index without dependency resolution."
+                )
+        else:
+            if group_names != {"runtime"} or any(
+                location
+                != (
+                    "runtime",
+                    "https://download.pytorch.org/whl/cpu",
+                    False,
+                )
+                for location in package_locations.values()
+            ):
+                raise ReleaseError(
+                    "CPU runtime packages must all use the CPU index."
+                )
+        normalized_profiles[profile_name] = {"groups": normalized_groups}
     return ProjectReleaseConfig(
         name=str(project["name"]),
         version=str(project["version"]),
@@ -142,13 +247,7 @@ def load_project_config(project_root: Path) -> ProjectReleaseConfig:
         python_maximum_exclusive=maximum,
         schema_version=schema_version,
         repository=repository,
-        runtime_profiles={
-            name: {
-                "indexUrl": str(profile["index-url"]),
-                "packages": list(profile["packages"]),
-            }
-            for name, profile in profiles.items()
-        },
+        runtime_profiles=normalized_profiles,
         application_dependencies=_read_constraints(root / "constraints.txt"),
     )
 
