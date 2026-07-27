@@ -58,8 +58,9 @@ function Join-TestPath {
     return $path
 }
 
-$isWindows = [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
-$pathComparison = if ($isWindows) {
+$runningOnWindows =
+    [Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT
+$pathComparison = if ($runningOnWindows) {
     [StringComparison]::OrdinalIgnoreCase
 }
 else {
