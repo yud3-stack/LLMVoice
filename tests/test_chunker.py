@@ -25,3 +25,21 @@ def test_prefers_paragraph_boundary() -> None:
         "Kısa paragraf.",
         "İkinci paragraf.",
     ]
+
+
+def test_does_not_combine_short_sentences() -> None:
+    assert chunk_text("Birinci cümle. İkinci cümle.", 100) == [
+        "Birinci cümle.",
+        "İkinci cümle.",
+    ]
+
+
+def test_combines_short_sentences_when_minimum_is_requested() -> None:
+    assert chunk_text("Bir. İki. Üç.", 40, min_chars=10) == ["Bir. İki. Üç."]
+
+
+def test_does_not_split_common_abbreviation() -> None:
+    assert chunk_text("Dr. Ayşe bugün geldi. Sonra gitti.", 100) == [
+        "Dr. Ayşe bugün geldi.",
+        "Sonra gitti.",
+    ]

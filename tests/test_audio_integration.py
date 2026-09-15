@@ -7,9 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from llmvoice.audio.merge import merge_wav_files
+from llmvoice.audio.merge import merge_wav_files, pause_after_text
 from llmvoice.audio.metadata import probe_audio
-from llmvoice.audio.reference import prepare_reference
+from llmvoice.audio.quality import inspect_audio
+from llmvoice.audio.reference import REFERENCE_MAX_SECONDS, prepare_reference
 from llmvoice.core.exceptions import AudioToolError, VoiceError
 from llmvoice.core.paths import AppPaths
 from llmvoice.voices.manager import VoiceManager
@@ -85,6 +86,15 @@ def test_corrupt_reference_cache_is_rebuilt(tmp_path) -> None:
     assert probe_audio(rebuilt).duration_seconds >= 3.1
 
 
+def test_long_reference_is_capped_for_conditioning(tmp_path) -> None:
+    source = tmp_path / "long-reference.wav"
+    _write_segments(source, [("tone", 18.0)])
+
+    prepared = prepare_reference(source, tmp_path / "cache")
+
+    assert probe_audio(prepared).duration_seconds <= REFERENCE_MAX_SECONDS + 0.1
+
+
 def test_voice_validation_with_real_audio(tmp_path) -> None:
     paths = AppPaths(tmp_path / "data")
     manager = VoiceManager(paths)
@@ -103,6 +113,20 @@ def test_voice_validation_with_real_audio(tmp_path) -> None:
         manager.add("broken", broken)
 
 
+def test_audio_quality_report_reads_levels(tmp_path) -> None:
+    source = tmp_path / "reference.wav"
+    _write_segments(source, [("tone", 6.2)])
+
+    report = inspect_audio(source)
+
+    assert report.duration_seconds >= 6.1
+    assert report.mean_volume_db is not None
+    assert report.max_volume_db is not None
+    assert not report.clipping_risk
+    assert report.score >= 80
+    assert report.silence_ratio < 0.1
+
+
 def test_chunk_pause_is_inserted(tmp_path) -> None:
     first = tmp_path / "first.wav"
     second = tmp_path / "second.wav"
@@ -111,3 +135,21 @@ def test_chunk_pause_is_inserted(tmp_path) -> None:
     _write_segments(second, [("tone", 0.2)])
     merge_wav_files([first, second], output, pause_ms=100)
     assert 0.47 <= probe_audio(output).duration_seconds <= 0.53
+
+
+def test_crossfade_keeps_merge_duration_bounded(tmp_path) -> None:
+    first = tmp_path / "first.wav"
+    second = tmp_path / "second.wav"
+    output = tmp_path / "merged-crossfade.wav"
+    _write_segments(first, [("tone", 0.2)])
+    _write_segments(second, [("tone", 0.2)])
+
+    merge_wav_files([first, second], output, pause_ms=100, crossfade_ms=20)
+
+    assert 0.54 <= probe_audio(output).duration_seconds <= 0.58
+
+
+def test_pause_after_text_uses_punctuation() -> None:
+    assert pause_after_text("Bir cümle.", 80) == 100
+    assert pause_after_text("Kısa,", 80) == 60
+    assert pause_after_text("Kelime", 80) == 40

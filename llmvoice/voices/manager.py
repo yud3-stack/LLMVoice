@@ -21,6 +21,7 @@ class StoredVoice:
     name: str
     path: Path
     metadata: AudioMetadata
+    reference_paths: tuple[Path, ...] = ()
 
 
 class VoiceManager:
@@ -28,7 +29,7 @@ class VoiceManager:
         self.paths = paths
         self.paths.ensure()
 
-    def add(self, name: str, source: Path) -> StoredVoice:
+    def add(self, name: str, source: Path, references: tuple[Path, ...] = ()) -> StoredVoice:
         """Validate and store a voice reference without altering the source."""
         self._validate_name(name)
         source = source.expanduser().resolve()
@@ -39,6 +40,13 @@ class VoiceManager:
                 "Unsupported voice format. Supported: "
                 + ", ".join(sorted(SUPPORTED_AUDIO_EXTENSIONS))
             )
+        sources = (source, *references)
+        resolved_sources = tuple(path.expanduser().resolve() for path in sources)
+        for reference in resolved_sources[1:]:
+            if not reference.is_file():
+                raise VoiceError(f"Voice file not found: {reference}")
+            if reference.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
+                raise VoiceError(f"Unsupported voice format: {reference.suffix}")
         metadata = probe_audio(source)
         if metadata.duration_seconds < MIN_REFERENCE_SECONDS:
             raise VoiceError(
@@ -49,22 +57,42 @@ class VoiceManager:
         existing = self._matches(name)
         if existing:
             raise VoiceError(f"Voice '{name}' already exists. Remove it before replacing it.")
-        destination = self.paths.voices_dir / f"{name}{source.suffix.casefold()}"
+        destinations = [
+            self.paths.voices_dir / f"{name}{reference.suffix.casefold()}"
+            if index == 0
+            else self.paths.voices_dir / f"{name}-{index + 1}{reference.suffix.casefold()}"
+            for index, reference in enumerate(resolved_sources)
+        ]
         try:
-            shutil.copy2(source, destination)
+            for reference, destination in zip(resolved_sources, destinations):
+                shutil.copy2(reference, destination)
         except OSError as exc:
+            for destination in destinations:
+                destination.unlink(missing_ok=True)
             raise VoiceError(f"Could not store voice '{name}'.") from exc
-        return StoredVoice(name=name, path=destination, metadata=metadata)
+        return StoredVoice(
+            name=name,
+            path=destinations[0],
+            metadata=metadata,
+            reference_paths=tuple(destinations),
+        )
 
     def list(self) -> list[StoredVoice]:
         """List stored voices with current audio metadata."""
         paths = [
             path
             for path in self.paths.voices_dir.iterdir()
-            if path.is_file() and path.suffix.casefold() in SUPPORTED_AUDIO_EXTENSIONS
+            if path.is_file()
+            and path.suffix.casefold() in SUPPORTED_AUDIO_EXTENSIONS
+            and not re.fullmatch(r".+-\d+", path.stem)
         ]
         return [
-            StoredVoice(name=path.stem, path=path, metadata=probe_audio(path))
+            StoredVoice(
+                name=path.stem,
+                path=path,
+                metadata=probe_audio(path),
+                reference_paths=tuple(self._reference_paths(path.stem)),
+            )
             for path in sorted(paths, key=lambda item: item.stem.casefold())
         ]
 
@@ -77,14 +105,47 @@ class VoiceManager:
         if len(matches) > 1:
             raise VoiceError(f"Voice '{name}' is ambiguous in the voice directory.")
         path = matches[0]
-        return StoredVoice(name=name, path=path, metadata=probe_audio(path))
+        return StoredVoice(
+            name=name,
+            path=path,
+            metadata=probe_audio(path),
+            reference_paths=tuple(self._reference_paths(name)),
+        )
 
     def remove(self, name: str) -> None:
         matches = self._matches(name)
         if not matches:
             raise self.not_found(name)
-        for path in matches:
+        for path in self._reference_paths(name):
             path.unlink()
+
+    def add_reference(self, name: str, source: Path) -> StoredVoice:
+        """Append one recording to an existing voice profile."""
+        profile = self.info(name)
+        source = source.expanduser().resolve()
+        if not source.is_file() or source.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
+            raise VoiceError(f"Unsupported or missing voice file: {source}")
+        destination = self.paths.voices_dir / f"{name}-{len(profile.reference_paths) + 1}{source.suffix.casefold()}"
+        try:
+            shutil.copy2(source, destination)
+        except OSError as exc:
+            raise VoiceError(f"Could not add reference to voice '{name}'.") from exc
+        return StoredVoice(
+            name=name,
+            path=profile.path,
+            metadata=profile.metadata,
+            reference_paths=tuple((*profile.reference_paths, destination)),
+        )
+
+    def resolve_references(self, value: str) -> tuple[Path, ...]:
+        """Resolve a direct file to one reference or a stored voice profile."""
+        candidate = Path(value).expanduser()
+        if candidate.is_file():
+            return (candidate.resolve(),)
+        self._validate_name(value)
+        if not self._matches(value):
+            raise self.not_found(value)
+        return tuple(self._reference_paths(value))
 
     def resolve(self, value: str) -> Path:
         candidate = Path(value).expanduser()
@@ -109,6 +170,15 @@ class VoiceManager:
             path for path in self.paths.voices_dir.glob(f"{name}.*")
             if path.is_file() and path.suffix.casefold() in SUPPORTED_AUDIO_EXTENSIONS
         ]
+
+    def _reference_paths(self, name: str) -> list[Path]:
+        matches = [
+            path for path in self.paths.voices_dir.iterdir()
+            if path.is_file()
+            and path.suffix.casefold() in SUPPORTED_AUDIO_EXTENSIONS
+            and (path.stem == name or re.fullmatch(rf"{re.escape(name)}-\d+", path.stem))
+        ]
+        return sorted(matches, key=lambda path: (0 if path.stem == name else 1, path.name.casefold()))
 
     @staticmethod
     def _validate_name(name: str) -> None:

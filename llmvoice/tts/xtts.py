@@ -13,6 +13,11 @@ XTTS_LANGUAGES = {
     "ar", "cs", "de", "en", "es", "fr", "hi", "hu", "it", "ja",
     "ko", "nl", "pl", "pt", "ru", "tr", "zh-cn",
 }
+QUALITY_PROFILES = {
+    "natural": {"temperature": 0.85, "top_p": 0.90, "top_k": 50, "repetition_penalty": 1.8},
+    "balanced": {"temperature": 0.75, "top_p": 0.85, "top_k": 50, "repetition_penalty": 2.0},
+    "stable": {"temperature": 0.55, "top_p": 0.75, "top_k": 40, "repetition_penalty": 2.2},
+}
 
 
 class XTTSEngine(TTSEngine):
@@ -20,7 +25,7 @@ class XTTSEngine(TTSEngine):
         self.device = device
         self.models_dir = models_dir
         self._model: Any = None
-        self._prepared_speakers: set[str] = set()
+        self.quality_profile = "balanced"
 
     @property
     def display_name(self) -> str:
@@ -57,10 +62,15 @@ class XTTSEngine(TTSEngine):
                 "internet access for the first download, free disk space, and PyTorch/CUDA setup."
             ) from exc
 
+    def set_quality_profile(self, profile: str) -> None:
+        if profile not in QUALITY_PROFILES:
+            raise EngineError(f"Unknown XTTS quality profile: {profile}")
+        self.quality_profile = profile
+
     def synthesize(
         self,
         text: str,
-        voice_path: Path,
+        voice_path: Path | list[Path],
         language: str,
         output_path: Path,
     ) -> None:
@@ -71,25 +81,32 @@ class XTTSEngine(TTSEngine):
             )
         if self._model is None:
             raise EngineError("XTTS-v2 is not loaded.")
-        speaker_id = self._speaker_id(voice_path)
-        voice_is_cached = speaker_id in self._prepared_speakers
+        voice_paths = [voice_path] if isinstance(voice_path, Path) else voice_path
+        speaker_id = self._speaker_id(voice_paths)
         try:
             self._model.tts_to_file(
                 text=text,
                 speaker=speaker_id,
-                speaker_wav=None if voice_is_cached else str(voice_path),
+                # Recompute conditioning per chunk; XTTS speaker caching can
+                # otherwise make consecutive short generations unstable.
+                speaker_wav=(
+                    str(voice_paths[0])
+                    if len(voice_paths) == 1
+                    else [str(path) for path in voice_paths]
+                ),
                 language=language,
                 file_path=str(output_path),
+                # The application already supplies one sentence per chunk.
                 split_sentences=False,
+                **QUALITY_PROFILES[self.quality_profile],
             )
-            self._prepared_speakers.add(speaker_id)
         except Exception as exc:
             raise EngineError("XTTS synthesis failed.") from exc
 
     @staticmethod
-    def _speaker_id(voice_path: Path) -> str:
-        stat = voice_path.stat()
-        identity = (
-            f"{voice_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}"
+    def _speaker_id(voice_paths: list[Path]) -> str:
+        identity = ":".join(
+            f"{path.resolve()}:{path.stat().st_size}:{path.stat().st_mtime_ns}"
+            for path in voice_paths
         ).encode("utf-8")
         return f"llmvoice-{hashlib.sha256(identity).hexdigest()[:12]}"

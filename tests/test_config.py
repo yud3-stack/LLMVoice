@@ -12,6 +12,7 @@ def test_creates_default_config(tmp_path) -> None:
     config = store.load()
     assert config.default_language == "tr"
     assert config.default_speed == 1.0
+    assert config.quality_profile == "balanced"
     assert store.paths.config_file.exists()
 
 
@@ -53,5 +54,6 @@ def test_config_store_get_set_and_reject_unknown(tmp_path) -> None:
     updated = store.set("chunk_pause_ms", "120")
     assert updated.chunk_pause_ms == 120
     assert store.get("chunk_pause_ms") == 120
+    assert store.set("quality_profile", "natural").quality_profile == "natural"
     with pytest.raises(ConfigurationError, match="Unknown config field"):
         store.set("missing", "1")

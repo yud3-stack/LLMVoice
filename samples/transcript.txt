@@ -1,1 +1,1 @@
-Hello World.
+Merhaba, ben LLMVoice. Bu ses, yerel olarak yapay zeka kullanılarak oluşturuluyor. Bu kısa metin, ses sentezi sisteminin doğru çalışıp çalışmadığını test etmek için hazırlanmıştır.

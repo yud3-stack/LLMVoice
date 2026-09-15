@@ -23,3 +23,5 @@ build/
 *.ckpt
 *.pth
 !samples/.gitkeep
+desktop/node_modules/
+desktop/src-tauri/target/

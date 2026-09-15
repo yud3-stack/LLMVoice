@@ -26,7 +26,7 @@ download model weights; after that, synthesis can run offline.
 - FFmpeg **shared build** and FFprobe
 - Approximately 4 GB of model/disk space
 - NVIDIA GPU recommended; CPU fallback is supported but significantly slower
-- A clean, single-speaker voice reference; approximately 6-30 seconds recommended
+- A clean, single-speaker voice reference; approximately 6-15 seconds recommended
 
 XTTS-v2 supports English (`en`), Turkish (`tr`), and other documented languages.
 
@@ -57,9 +57,25 @@ Open a new terminal after installation:
 
 ```cmd
 llmvoice doctor
+llmvoice model status
+llmvoice model download
 llmvoice voice add friday reference.wav
 llmvoice config set default_voice friday
 llmvoice start transcript.txt --language en
+```
+
+Generate three quality variants for listening comparison:
+
+```cmd
+llmvoice compare transcript.txt --voice friday --output-dir compare
+```
+
+This creates `natural`, `balanced`, and `stable` MP3 files. Select one profile
+with `--quality`, or persist it with:
+
+```cmd
+llmvoice config set quality_profile natural
+llmvoice start transcript.txt --voice friday --quality natural
 ```
 
 Installer options include:
@@ -150,6 +166,11 @@ Add and inspect a voice:
 
 ```cmd
 llmvoice voice add friday reference.wav
+llmvoice voice add friday reference.wav --reference reference-quiet.wav
+llmvoice audio devices
+llmvoice voice record friday --duration 10
+llmvoice voice inspect reference.wav
+llmvoice voice references friday
 llmvoice voice info friday
 llmvoice voice list
 ```
@@ -167,6 +188,10 @@ llmvoice start transcript.txt --language en
 ```
 
 The default output is `transcript.mp3` in the transcript directory.
+
+The first synthesis downloads the XTTS-v2 model if it is not already present.
+To prepare it explicitly for offline use, run `llmvoice model download` and
+check the local installation with `llmvoice model status`.
 
 ## Start options
 
@@ -189,6 +214,17 @@ llmvoice start transcript.txt --force
 llmvoice start transcript.txt -o narration.mp3 --force
 ```
 
+Long syntheses can keep completed chunks for recovery after an interruption or
+engine failure:
+
+```cmd
+llmvoice start transcript.txt --voice friday --resume
+```
+
+Resume checkpoints are stored under the local cache and are removed after a
+successful MP3 is created. The checkpoint is tied to the input, voice reference,
+language, speed, and chunk plan, so changing those inputs starts a separate job.
+
 Automatic English/Turkish detection is available:
 
 ```cmd
@@ -207,6 +243,20 @@ llmvoice start transcript.txt --debug
 Normal application errors never print a traceback. `Ctrl+C` exits with code 130,
 cleans the temporary job directory, and leaves no partial MP3.
 
+For automation, use `--json` to receive one machine-readable result instead of
+terminal progress output:
+
+```cmd
+llmvoice start transcript.txt --voice friday --json
+llmvoice start transcript.txt --voice friday --dry-run --json
+llmvoice doctor --json
+llmvoice voice list --json
+llmvoice config show --json
+```
+
+Successful synthesis returns `ok: true`; expected failures return `ok: false`
+and exit with code 1. Cancellation returns exit code 130.
+
 ## Voice management
 
 Supported reference formats include WAV, MP3, FLAC, M4A, AAC, OGG, and Opus.
@@ -221,9 +271,59 @@ llmvoice voice remove friday
 llmvoice voice remove friday --yes
 ```
 
-References shorter than 3 seconds are rejected. References longer than 30
-seconds are accepted with a warning. LLMVoice never modifies the original.
-It prepares a trimmed mono 24 kHz WAV under the reference cache.
+References shorter than 3 seconds are rejected. References longer than 15
+seconds are accepted and capped during preparation. LLMVoice never modifies the
+original. It prepares a trimmed mono 24 kHz WAV under the reference cache.
+Multiple recordings of the same speaker are optional. Add them by repeating
+`--reference`; a single reference remains fully supported. Stored profiles use
+all references during XTTS speaker conditioning, while the first file remains
+the primary reference for compatibility.
+
+The CLI can also record a reference directly from a Windows microphone. The
+first recording creates a profile; later recordings with the same name are
+added as extra references:
+
+```cmd
+llmvoice audio devices
+llmvoice voice record friday --duration 10
+llmvoice voice record friday --duration 10 --device "Mikrofon (4- USBZH3-ENC)" --yes
+```
+
+Recordings below `60/100` are rejected and are never added to the profile.
+
+Inspect a reference before adding it:
+
+```cmd
+llmvoice voice inspect reference.wav
+llmvoice voice inspect reference.wav --json
+```
+
+The report checks duration, level, clipping risk, sample rate, and channel
+layout. It does not upload or modify the source file.
+
+Optional RNNoise cleanup is available when an FFmpeg `arnndn` model file is
+provided. The model is intentionally not bundled; download it separately and
+review its license before use:
+
+```cmd
+llmvoice start transcript.txt --voice friday --denoise-model voice.model
+```
+
+When a profile has multiple references, review them individually before a
+strict synthesis run:
+
+```cmd
+llmvoice voice references friday
+llmvoice voice references friday --json
+llmvoice start transcript.txt --voice friday --strict-reference-quality
+```
+
+Strict mode uses only references scoring at least 60/100. Without the option,
+all stored references are used for maximum speaker information and backward
+compatibility.
+
+The cleaned reference is cached separately from the original. Without
+`--denoise-model`, no denoise filter is applied.
 
 Endpoint trimming removes silence only from the beginning and end. Natural
 pauses inside the recording are preserved.
@@ -236,7 +336,9 @@ llmvoice config get default_voice
 llmvoice config set default_voice friday
 llmvoice config set default_language en
 llmvoice config set device auto
-llmvoice config set chunk_pause_ms 80
+llmvoice config set chunk_pause_ms 20
+llmvoice config set crossfade_ms 0
+llmvoice config set quality_profile balanced
 ```
 
 Unknown fields and invalid values are rejected through `AppConfig` validation.
@@ -257,7 +359,9 @@ Default configuration:
   "device": "auto",
   "engine": "xtts",
   "chunk_size": 220,
-  "chunk_pause_ms": 80
+  "chunk_pause_ms": 20,
+  "crossfade_ms": 0,
+  "quality_profile": "balanced"
 }
 ```
 
@@ -279,13 +383,17 @@ rebuilt. Temporary `job-*` directories are always removed.
 
 ## Long transcripts
 
-The text is normalized without rewriting its meaning. Paragraph and sentence
-boundaries are preferred when creating bounded chunks. Each chunk is synthesized
-separately, and an 80 ms pause is inserted between chunks by default. Configure
-the pause from 0 to 500 ms using `chunk_pause_ms`.
+The text is normalized without rewriting its meaning. For Turkish, common
+abbreviations, percentages, decimals, and integers are expanded into
+pronunciation-friendly text. Paragraph and sentence boundaries are preferred
+when creating bounded chunks. Each chunk is synthesized separately; punctuation
+controls the pause between chunks, with `chunk_pause_ms` as the baseline (20 ms
+by default).
+Short crossfades smooth chunk boundaries and can be configured from 0 to 100 ms
+using `crossfade_ms`.
 
-XTTS voice conditioning is computed from `speaker_wav` on the first chunk and
-reused by internal speaker ID for later chunks. The ID is derived from the
+XTTS voice conditioning is computed from `speaker_wav` for each chunk to keep
+short consecutive generations stable. The speaker ID is derived from the
 processed reference path, size, and modification timestamp to avoid collisions.
 
 Before synthesis, LLMVoice estimates speech duration and checks free space

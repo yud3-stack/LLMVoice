@@ -39,3 +39,23 @@ def test_failed_forced_encoding_preserves_existing_output(tmp_path, monkeypatch)
         encode_mp3(source, output, speed=1.0)
     assert output.read_bytes() == b"known-good-output"
     assert not list(tmp_path.glob(".output.llmvoice-*.mp3"))
+
+
+def test_encoding_normalizes_loudness_and_applies_speed(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "merged.wav"
+    source.write_bytes(b"wav")
+    output = tmp_path / "output.mp3"
+    arguments_seen: list[str] = []
+    monkeypatch.setattr("llmvoice.audio.merge.require_ffmpeg", lambda: ("ffmpeg", "ffprobe"))
+
+    def capture(arguments: list[str], purpose: str) -> None:
+        arguments_seen.extend(arguments)
+        Path(arguments[-1]).write_bytes(b"mp3")
+
+    monkeypatch.setattr("llmvoice.audio.merge.run_tool", capture)
+
+    encode_mp3(source, output, speed=0.95)
+
+    assert arguments_seen[arguments_seen.index("-filter:a") + 1] == (
+        "atempo=0.9500,loudnorm=I=-16:TP=-1.5:LRA=11"
+    )

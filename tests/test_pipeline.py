@@ -48,7 +48,7 @@ def test_pipeline_is_engine_mockable(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setattr(
         "llmvoice.service.merge_wav_files",
-        lambda chunks, destination, pause_ms=0: destination.write_bytes(b"merged"),
+        lambda chunks, destination, pause_ms=0, crossfade_ms=0: destination.write_bytes(b"merged"),
     )
     monkeypatch.setattr(
         "llmvoice.service.encode_mp3",
@@ -137,3 +137,62 @@ def test_keyboard_interrupt_cleans_temp_and_partial_output(tmp_path, monkeypatch
         _run_failing_pipeline(tmp_path, monkeypatch, KeyboardInterrupt())
     assert not list((tmp_path / "data" / "cache").glob("job-*"))
     assert not (tmp_path / "output.mp3").exists()
+
+
+def test_resume_reuses_completed_chunks(tmp_path, monkeypatch) -> None:
+    paths = AppPaths(tmp_path / "data")
+    paths.ensure()
+    reference = tmp_path / "voice.wav"
+    reference.write_bytes(b"voice")
+    (tmp_path / "input.txt").write_text("One. Two. Three.", encoding="utf-8")
+    output = tmp_path / "output.mp3"
+    monkeypatch.setattr("llmvoice.service.prepare_reference", lambda source, cache: source)
+    monkeypatch.setattr(
+        "llmvoice.service.merge_wav_files",
+        lambda chunks, destination, pause_ms=0, crossfade_ms=0: destination.write_bytes(b"merged"),
+    )
+    monkeypatch.setattr(
+        "llmvoice.service.encode_mp3",
+        lambda source, destination, speed: destination.write_bytes(b"mp3"),
+    )
+
+    class InterruptingEngine(FakeEngine):
+        def synthesize(self, text, voice_path, language, output_path) -> None:
+            if text == "Two.":
+                raise EngineError("interrupted")
+            super().synthesize(text, voice_path, language, output_path)
+
+    request = SynthesisRequest(
+        input_path=tmp_path / "input.txt",
+        output_path=output,
+        voice_path=reference,
+        language="en",
+        speed=1.0,
+    )
+    plan = SynthesisPlan("One. Two. Three.", ["One.", "Two.", "Three."], "en")
+
+    with pytest.raises(SpeechGenerationError, match="Chunk: 2 / 3"):
+        VoiceService(InterruptingEngine(), paths, AppConfig()).run(
+            request,
+            plan,
+            progress=lambda current, total: None,
+            stage=lambda name: None,
+            resume=True,
+        )
+
+    checkpoint_dirs = list((paths.cache_dir / "checkpoints").iterdir())
+    assert len(checkpoint_dirs) == 1
+    assert (checkpoint_dirs[0] / "chunk-00001.wav").exists()
+
+    resumed = FakeEngine()
+    VoiceService(resumed, paths, AppConfig()).run(
+        request,
+        plan,
+        progress=lambda current, total: None,
+        stage=lambda name: None,
+        resume=True,
+    )
+
+    assert resumed.calls == ["Two.", "Three."]
+    assert output.read_bytes() == b"mp3"
+    assert not list((paths.cache_dir / "checkpoints").iterdir())

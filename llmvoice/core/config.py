@@ -10,10 +10,13 @@ from llmvoice.core.exceptions import ConfigurationError
 from llmvoice.core.paths import AppPaths
 
 VALID_DEVICES = {"auto", "cuda", "cpu"}
+VALID_QUALITY_PROFILES = {"natural", "balanced", "stable"}
 MIN_SPEED = 0.5
 MAX_SPEED = 2.0
 MIN_CHUNK_PAUSE_MS = 0
 MAX_CHUNK_PAUSE_MS = 500
+MIN_CROSSFADE_MS = 0
+MAX_CROSSFADE_MS = 100
 
 
 @dataclass(frozen=True)
@@ -25,7 +28,9 @@ class AppConfig:
     device: str = "auto"
     engine: str = "xtts"
     chunk_size: int = 220
-    chunk_pause_ms: int = 80
+    chunk_pause_ms: int = 20
+    crossfade_ms: int = 0
+    quality_profile: str = "balanced"
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "AppConfig":
@@ -52,8 +57,14 @@ class AppConfig:
             self.chunk_pause_ms, bool
         ):
             raise ConfigurationError("Config 'chunk_pause_ms' must be an integer.")
+        if not isinstance(self.crossfade_ms, int) or isinstance(self.crossfade_ms, bool):
+            raise ConfigurationError("Config 'crossfade_ms' must be an integer.")
         if not isinstance(self.device, str):
             raise ConfigurationError("Config 'device' must be a string.")
+        if not isinstance(self.quality_profile, str) or self.quality_profile not in VALID_QUALITY_PROFILES:
+            raise ConfigurationError(
+                "Config 'quality_profile' must be one of: natural, balanced, stable."
+            )
         if self.device not in VALID_DEVICES:
             raise ConfigurationError("Config 'device' must be one of: auto, cuda, cpu.")
         if not MIN_SPEED <= self.default_speed <= MAX_SPEED:
@@ -68,6 +79,11 @@ class AppConfig:
             raise ConfigurationError(
                 f"Config 'chunk_pause_ms' must be between "
                 f"{MIN_CHUNK_PAUSE_MS} and {MAX_CHUNK_PAUSE_MS}."
+            )
+        if not MIN_CROSSFADE_MS <= self.crossfade_ms <= MAX_CROSSFADE_MS:
+            raise ConfigurationError(
+                f"Config 'crossfade_ms' must be between "
+                f"{MIN_CROSSFADE_MS} and {MAX_CROSSFADE_MS}."
             )
         if not self.default_language.strip():
             raise ConfigurationError("Config 'default_language' cannot be empty.")
