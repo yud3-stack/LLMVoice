@@ -75,7 +75,7 @@ jobs:
           releaseName: LLMVoice Studio ${{ github.ref_name }}
           releaseBody: See the assets below to install this version.
           releaseDraft: false
-           prerelease: true
+          prerelease: true
           includeUpdaterJson: true
 
       - name: Publish desktop updater channel
@@ -92,6 +92,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             gh release create desktop-latest `
               --title "LLMVoice Studio updater channel" `
-               --notes "Early Access updater manifest channel. The downloadable application is published in versioned desktop releases."
+              --notes "Early Access updater manifest channel. The downloadable application is published in versioned desktop releases."
           }
           gh release upload desktop-latest (Join-Path $downloadDirectory "latest.json") --clobber
