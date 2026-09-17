@@ -9,13 +9,13 @@ from llmvoice.audio.metadata import probe_audio
 from llmvoice.core.exceptions import AudioToolError
 
 ENDPOINT_TRIM_FILTER = (
-    "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02,"
+    "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02,"
     "areverse,"
-    "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02,"
+    "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02,"
     "areverse,atrim=duration=15"
 )
 REFERENCE_LOUDNORM = "loudnorm=I=-20:TP=-1.5:LRA=11"
-REFERENCE_PROCESSING_VERSION = "3"
+REFERENCE_PROCESSING_VERSION = "4"
 REFERENCE_MAX_SECONDS = 15.0
 
 
