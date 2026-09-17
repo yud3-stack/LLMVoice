@@ -3,7 +3,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from llmvoice.audio import ffmpeg
+from llmvoice.core.exceptions import AudioToolError
 
 
 def test_shared_ffmpeg_registers_dll_directory_and_retains_handle(
@@ -57,3 +60,12 @@ def test_shared_ffmpeg_registers_dll_directory_and_retains_handle(
         ffmpeg._DLL_DIRECTORY_HANDLES[:] = previous_handles
         ffmpeg._REGISTERED_DLL_DIRECTORIES.clear()
         ffmpeg._REGISTERED_DLL_DIRECTORIES.update(previous_directories)
+
+
+def test_ffmpeg_timeout_is_reported(monkeypatch) -> None:
+    def timed_out(*args, **kwargs):
+        raise ffmpeg.subprocess.TimeoutExpired(cmd=args[0], timeout=kwargs["timeout"])
+
+    monkeypatch.setattr(ffmpeg.subprocess, "run", timed_out)
+    with pytest.raises(AudioToolError, match="timed out after"):
+        ffmpeg.run_tool(["ffmpeg", "-version"], "testing timeout")
