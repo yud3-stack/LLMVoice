@@ -28,7 +28,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlDNEMwQ0QzMUZGODA3QjgKUldTNEIvZ2Ywd3hNbkpTQ1hLcGNRNmVCVDNzRkhzMkUzSkc1Q3BPU2dCZkpMdlpkb0k2d3pWUFIK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEzRjU0NzdGODVCNEFEMkMKUldRc3JiU0ZmMGYxbzUvOHU5YnNTcWJObEczK0V4NmlFMGVuUWZDa3hlTkhsU0V5M1Ruc3lXaFoK",
       "endpoints": ["https://github.com/yud3-stack/LLMVoice/releases/download/desktop-latest/latest.json"]
     }
   },
