@@ -59,6 +59,42 @@ jobs:
       - name: Build source and wheel distributions
         run: python -m build
 
+  desktop-quality:
+    name: Desktop frontend and Tauri check
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Check Tauri backend
+        working-directory: desktop/src-tauri
+        run: cargo check --locked
+
+      - name: Build Tauri application
+        working-directory: desktop
+        run: npm run tauri build -- --ci --no-bundle
+
   integration-ffmpeg:
     name: FFmpeg integration tests
     runs-on: ubuntu-latest

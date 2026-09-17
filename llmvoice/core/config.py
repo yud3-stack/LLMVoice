@@ -8,9 +8,12 @@ from uuid import uuid4
 
 from llmvoice.core.exceptions import ConfigurationError
 from llmvoice.core.paths import AppPaths
+from llmvoice.text.languages import SUPPORTED_LANGUAGES
 
 VALID_DEVICES = {"auto", "cuda", "cpu"}
-VALID_QUALITY_PROFILES = {"natural", "balanced", "stable"}
+VALID_ENGINES = {"xtts"}
+VALID_QUALITY_PROFILES = {"natural", "balanced", "stable", "expressive"}
+VALID_OUTPUT_FORMATS = {"mp3", "wav"}
 MIN_SPEED = 0.5
 MAX_SPEED = 2.0
 MIN_CHUNK_PAUSE_MS = 0
@@ -34,9 +37,13 @@ class AppConfig:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "AppConfig":
-        known = {field: values[field] for field in cls.__dataclass_fields__ if field in values}
+        unknown = sorted(set(values) - set(cls.__dataclass_fields__))
+        if unknown:
+            raise ConfigurationError(
+                "Unknown config field(s): " + ", ".join(unknown)
+            )
         try:
-            config = cls(**known)
+            config = cls(**values)
         except TypeError as exc:
             raise ConfigurationError(f"Invalid config fields: {exc}") from exc
         config.validate()
@@ -61,9 +68,13 @@ class AppConfig:
             raise ConfigurationError("Config 'crossfade_ms' must be an integer.")
         if not isinstance(self.device, str):
             raise ConfigurationError("Config 'device' must be a string.")
+        if not isinstance(self.engine, str) or self.engine not in VALID_ENGINES:
+            raise ConfigurationError("Config 'engine' must be one of: xtts.")
+        if not isinstance(self.output_format, str):
+            raise ConfigurationError("Config 'output_format' must be a string.")
         if not isinstance(self.quality_profile, str) or self.quality_profile not in VALID_QUALITY_PROFILES:
             raise ConfigurationError(
-                "Config 'quality_profile' must be one of: natural, balanced, stable."
+                "Config 'quality_profile' must be one of: natural, balanced, stable, expressive."
             )
         if self.device not in VALID_DEVICES:
             raise ConfigurationError("Config 'device' must be one of: auto, cuda, cpu.")
@@ -71,8 +82,8 @@ class AppConfig:
             raise ConfigurationError(
                 f"Config 'default_speed' must be between {MIN_SPEED} and {MAX_SPEED}."
             )
-        if self.output_format != "mp3":
-            raise ConfigurationError("Only 'mp3' output is currently supported.")
+        if self.output_format not in VALID_OUTPUT_FORMATS:
+            raise ConfigurationError("Config 'output_format' must be one of: mp3, wav.")
         if not 80 <= self.chunk_size <= 400:
             raise ConfigurationError("Config 'chunk_size' must be between 80 and 400.")
         if not MIN_CHUNK_PAUSE_MS <= self.chunk_pause_ms <= MAX_CHUNK_PAUSE_MS:
@@ -85,8 +96,10 @@ class AppConfig:
                 f"Config 'crossfade_ms' must be between "
                 f"{MIN_CROSSFADE_MS} and {MAX_CROSSFADE_MS}."
             )
-        if not self.default_language.strip():
-            raise ConfigurationError("Config 'default_language' cannot be empty.")
+        if self.default_language.casefold() not in SUPPORTED_LANGUAGES:
+            raise ConfigurationError(
+                "Config 'default_language' must be a supported language code."
+            )
 
 
 class ConfigStore:

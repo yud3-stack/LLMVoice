@@ -6,6 +6,12 @@
   </head>
   <body>
     <div id="root"></div>
+    <div id="render-progress" aria-live="polite"><div class="render-progress-top"><span class="render-progress-label" data-i18n="preparing">Preparing render</span><strong class="render-progress-value">0%</strong></div><div><i></i></div></div>
+    <button id="render-console-toggle" type="button" aria-label="Show render log">⌃</button>
+    <div id="render-console" aria-live="polite"><div class="render-console-head"><span>●</span><strong>Render log</strong><button id="render-console-close" type="button" aria-label="Hide render log">×</button></div><div class="render-console-lines"></div></div>
+    <div id="outputs-popover"><strong data-i18n="recentVoiceovers">Recent voiceovers</strong><span class="outputs-empty" data-i18n="noRendered">No rendered files yet.</span></div>
+    <div id="studio-player"><button id="player-close" type="button" aria-label="Close player">×</button><span class="player-kicker" data-i18n="nowPlaying">Now playing</span><div class="player-waveform" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><audio id="studio-audio" controls></audio></div>
+    <div id="feedback-panel"><form id="feedback-form"><button class="feedback-close" type="button">×</button><span class="modal-kicker" data-i18n="feedbackKicker">FEEDBACK</span><h2 data-i18n="feedbackTitle">Share your feedback</h2><p data-i18n="feedbackDescription">Tell us what would make LLMVoice better.</p><textarea id="feedback-message" required></textarea><button class="modal-submit" type="submit" data-i18n="feedbackSubmit">Open feedback form</button></form></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

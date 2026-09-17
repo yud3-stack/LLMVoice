@@ -113,12 +113,19 @@ def merge_wav_files(
     run_tool(arguments, "merging audio chunks")
 
 
-def encode_mp3(source: Path, destination: Path, speed: float) -> None:
+def _encode_audio(
+    source: Path,
+    destination: Path,
+    speed: float,
+    codec: str,
+    temporary_suffix: str,
+    purpose: str,
+) -> None:
     ffmpeg, _ = require_ffmpeg()
     destination.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile(
         prefix=f".{destination.stem}.llmvoice-",
-        suffix=".mp3",
+        suffix=temporary_suffix,
         dir=destination.parent,
         delete=False,
     )
@@ -133,9 +140,29 @@ def encode_mp3(source: Path, destination: Path, speed: float) -> None:
     if abs(speed - 1.0) > 0.001:
         filters.insert(0, f"atempo={speed:.4f}")
     arguments.extend(["-filter:a", ",".join(filters)])
-    arguments.extend(["-c:a", "libmp3lame", "-q:a", "2", temporary.resolve().as_posix()])
+    arguments.extend(["-c:a", codec])
+    if codec == "libmp3lame":
+        arguments.extend(["-q:a", "2"])
+    arguments.append(temporary.resolve().as_posix())
     try:
-        run_tool(arguments, "encoding MP3")
+        run_tool(arguments, purpose)
         temporary.replace(destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def encode_mp3(source: Path, destination: Path, speed: float) -> None:
+    _encode_audio(source, destination, speed, "libmp3lame", ".mp3", "encoding MP3")
+
+
+def encode_wav(source: Path, destination: Path, speed: float) -> None:
+    _encode_audio(source, destination, speed, "pcm_s16le", ".wav", "encoding WAV")
+
+
+def encode_audio(source: Path, destination: Path, speed: float) -> None:
+    if destination.suffix.casefold() == ".mp3":
+        encode_mp3(source, destination, speed)
+    elif destination.suffix.casefold() == ".wav":
+        encode_wav(source, destination, speed)
+    else:
+        raise ValueError("Output format must be .mp3 or .wav.")

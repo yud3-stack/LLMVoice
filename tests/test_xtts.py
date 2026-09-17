@@ -44,6 +44,21 @@ def test_quality_profile_controls_sampling_and_sentence_splitting(tmp_path) -> N
     assert api.calls[0]["top_p"] == 0.90
 
 
+def test_expressive_quality_profile_is_supported(tmp_path) -> None:
+    engine = XTTSEngine("cpu", tmp_path / "models")
+    api = FakeXttsApi()
+    engine._model = api
+    engine.set_quality_profile("expressive")
+    voice = tmp_path / "voice.wav"
+    voice.write_bytes(b"voice")
+
+    engine.synthesize("Bir.", voice, "tr", tmp_path / "one.wav")
+
+    assert api.calls[0]["temperature"] == 0.95
+    assert api.calls[0]["top_p"] == 0.95
+    assert api.calls[0]["top_k"] == 60
+
+
 def test_rejects_unsupported_language_before_model_call(tmp_path) -> None:
     engine = XTTSEngine("cpu", tmp_path / "models")
     engine._model = FakeXttsApi()

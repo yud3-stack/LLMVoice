@@ -1,7 +1,13 @@
 # LLMVoice
 
-LLMVoice is a Windows CLI that converts UTF-8 text transcripts into MP3 audio
-using a fully local voice-cloning model.
+LLMVoice is a Windows-first, local voice-cloning toolkit that converts UTF-8 text
+transcripts into MP3 or WAV audio. It includes both a CLI and an Early Access
+desktop studio.
+
+> [!WARNING]
+> **Early Access:** This first public release targets Windows 10/11. Expect
+> rough edges, slow CPU generation, and breaking changes while the desktop studio
+> and installer receive feedback. macOS and Linux are not supported yet.
 
 ```text
 TXT -> normalize -> natural chunks -> XTTS-v2 -> audio merge -> MP3
@@ -29,6 +35,16 @@ download model weights; after that, synthesis can run offline.
 - A clean, single-speaker voice reference; approximately 6-15 seconds recommended
 
 XTTS-v2 supports English (`en`), Turkish (`tr`), and other documented languages.
+
+## Desktop Studio
+
+The Windows desktop studio provides local project management, script editing,
+voice selection, MP3/WAV rendering, output playback, and updater support. It is
+published separately from the Python package under the `desktop-v*` tag series.
+
+For Early Access, use the installer and desktop assets attached to the matching
+GitHub prerelease. The desktop studio requires the LLMVoice runtime installed by
+the Windows installer and does not support macOS or Linux yet.
 
 ## User installation
 
@@ -71,12 +87,15 @@ llmvoice compare transcript.txt --voice friday --output-dir compare
 ```
 
 This creates `natural`, `balanced`, and `stable` MP3 files. Select one profile
-with `--quality`, or persist it with:
+with `--quality`, including the more varied `expressive` profile, or persist it with:
 
 ```cmd
 llmvoice config set quality_profile natural
 llmvoice start transcript.txt --voice friday --quality natural
 ```
+
+`expressive` increases XTTS sampling variation. It can sound more dynamic, but
+may be less consistent between chunks than `balanced` or `stable`.
 
 Installer options include:
 
@@ -84,7 +103,7 @@ Installer options include:
 .\install.ps1 -Runtime auto
 .\install.ps1 -Runtime cuda
 .\install.ps1 -Runtime cpu
-.\install.ps1 -Version 0.1.7
+.\install.ps1 -Version 0.1.8
 .\install.ps1 -Force
 .\install.ps1 -Debug
 ```
@@ -201,7 +220,7 @@ Show the plan without loading XTTS or generating audio:
 llmvoice start transcript.txt --voice friday --language en --dry-run
 ```
 
-Choose a custom output, speed, and direct reference path:
+Choose a custom MP3 or WAV output, speed, and direct reference path:
 
 ```cmd
 llmvoice start transcript.txt --voice "C:\Voices\friday.mp3" --language en --speed 0.95 -o narration.mp3
@@ -213,6 +232,9 @@ Existing outputs are protected. Overwrite only when intentional:
 llmvoice start transcript.txt --force
 llmvoice start transcript.txt -o narration.mp3 --force
 ```
+
+WAV output uses 24 kHz mono PCM and can be selected from the desktop studio or
+with `-o narration.wav`. MP3 remains the default format.
 
 Long syntheses can keep completed chunks for recovery after an interruption or
 engine failure:
@@ -443,9 +465,9 @@ Run the remaining release checks:
 python -m compileall llmvoice
 python -m pip check
 python -m build
-python scripts\release.py validate-tag --tag v0.1.7
-python scripts\release.py prepare --tag v0.1.7 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
-python scripts\release.py validate --tag v0.1.7 --assets-dir release-assets
+python scripts\release.py validate-tag --tag v0.1.8
+python scripts\release.py prepare --tag v0.1.8 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
+python scripts\release.py validate --tag v0.1.8 --assets-dir release-assets
 ```
 
 Integration tests generate small synthetic WAV files and verify:

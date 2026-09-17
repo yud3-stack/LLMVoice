@@ -13,6 +13,7 @@ MIN_DISK_RESERVE_BYTES = CACHE_DISK_RESERVE_BYTES
 PCM_BYTES_PER_SECOND = 48_000
 TEMPORARY_AUDIO_COPIES = 3
 MP3_BYTES_PER_SECOND = 32_000
+WAV_BYTES_PER_SECOND = 48_000
 
 
 def estimate_speech_seconds(text: str, words_per_minute: int = 150) -> float:
@@ -27,9 +28,14 @@ def required_disk_bytes(estimated_seconds: float) -> int:
     return int(CACHE_DISK_RESERVE_BYTES + audio_bytes)
 
 
-def required_output_bytes(estimated_seconds: float) -> int:
-    """Estimate free space needed for an atomically encoded MP3."""
-    return int(OUTPUT_DISK_RESERVE_BYTES + estimated_seconds * MP3_BYTES_PER_SECOND)
+def required_output_bytes(estimated_seconds: float, output_path: Path | None = None) -> int:
+    """Estimate free space needed for the atomically encoded output."""
+    bytes_per_second = (
+        WAV_BYTES_PER_SECOND
+        if output_path is not None and output_path.suffix.casefold() == ".wav"
+        else MP3_BYTES_PER_SECOND
+    )
+    return int(OUTPUT_DISK_RESERVE_BYTES + estimated_seconds * bytes_per_second)
 
 
 def _nearest_existing_path(path: Path) -> Path:
@@ -75,7 +81,7 @@ def check_synthesis_disk_space(
     cache_location = _nearest_existing_path(cache_dir)
     output_location = _nearest_existing_path(output_path.parent)
     cache_required = required_disk_bytes(estimated_seconds)
-    output_required = required_output_bytes(estimated_seconds)
+    output_required = required_output_bytes(estimated_seconds, output_path)
 
     if _volume_key(cache_location) == _volume_key(output_location):
         available = shutil.disk_usage(cache_location).free

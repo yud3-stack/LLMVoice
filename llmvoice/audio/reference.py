@@ -21,9 +21,15 @@ REFERENCE_MAX_SECONDS = 15.0
 
 def _cache_key(source: Path, denoise_model: Path | None = None) -> str:
     stat = source.stat()
+    denoise_identity = ""
+    if denoise_model is not None:
+        model_stat = denoise_model.stat()
+        denoise_identity = (
+            f"{denoise_model.resolve()}:{model_stat.st_size}:{model_stat.st_mtime_ns}"
+        )
     value = (
         f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:"
-        f"{REFERENCE_PROCESSING_VERSION}:{denoise_model.resolve() if denoise_model else ''}"
+        f"{REFERENCE_PROCESSING_VERSION}:{denoise_identity}"
     ).encode("utf-8")
     return hashlib.sha256(value).hexdigest()[:24]
 

@@ -249,7 +249,7 @@ def model_download(
 def start(
     input_file: Annotated[Path, typer.Argument(help="UTF-8 .txt transcript.")],
     output: Annotated[
-        Path | None, typer.Option("--output", "-o", help="Destination .mp3 path.")
+        Path | None, typer.Option("--output", "-o", help="Destination .mp3 or .wav path.")
     ] = None,
     voice: Annotated[
         str | None, typer.Option("--voice", help="Stored voice name or audio file path.")
@@ -290,7 +290,7 @@ def start(
         str | None,
         typer.Option(
             "--quality",
-            help="XTTS quality profile: natural, balanced, or stable.",
+            help="XTTS quality profile: natural, balanced, stable, or expressive.",
         ),
     ] = None,
     strict_reference_quality: Annotated[
@@ -301,7 +301,7 @@ def start(
         ),
     ] = False,
 ) -> None:
-    """Convert a transcript into a cloned-voice MP3."""
+    """Convert a transcript into a cloned-voice MP3 or WAV."""
 
     def action() -> None:
         logging.basicConfig(
@@ -342,9 +342,10 @@ def start(
                 )
         voice_path = voice_paths[0]
 
-        destination = output_path_for(input_path, output)
-        if destination.suffix.casefold() != ".mp3":
-            raise LLMVoiceError("Output path must end with .mp3.")
+        destination = output_path_for(input_path, output, config.output_format)
+        if destination.suffix.casefold() not in {".mp3", ".wav"}:
+            raise LLMVoiceError("Output path must end with .mp3 or .wav.")
+        request_output_format = destination.suffix.casefold().lstrip(".").upper()
         if not dry_run:
             ensure_output_available(destination, force)
 
@@ -352,7 +353,7 @@ def start(
         selected_quality = quality or config.quality_profile
         if selected_quality not in VALID_QUALITY_PROFILES:
             raise LLMVoiceError(
-                "Quality profile must be one of: natural, balanced, stable."
+                "Quality profile must be one of: natural, balanced, stable, expressive."
             )
         selected_denoise_model = (
             denoise_model.expanduser().resolve() if denoise_model is not None else None
@@ -465,7 +466,7 @@ def start(
                 "model_ready": f"{ready} Model ready",
                 "merging": "Merging audio...",
                 "merge_done": f"{ready} Done",
-                "encoding": "Encoding MP3...",
+                "encoding": f"Encoding {request_output_format}...",
                 "encoding_done": f"{ready} Done",
             }
             console.print(labels[name])
@@ -609,7 +610,7 @@ def voice_list(
         else:
             render_voice_list(console, voices)
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @voice_app.command("info")
@@ -626,7 +627,7 @@ def voice_info(
         else:
             render_voice_info(console, voice)
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @voice_app.command("inspect")
@@ -767,6 +768,7 @@ def voice_record(
     def action() -> None:
         paths = AppPaths.discover()
         paths.ensure()
+        VoiceManager.validate_name(name)
         temporary = paths.cache_dir / "recordings" / f"{name}.wav"
         console.print(
             f"Recording {duration:.1f} seconds from {device or 'the default microphone'}..."
@@ -832,7 +834,7 @@ def config_show(
             console.print(json.dumps(payload, indent=2, ensure_ascii=False))
             console.print(f"\nConfig: {paths.config_file}")
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @config_app.command("get")
@@ -849,7 +851,7 @@ def config_get(
         else:
             console.print("null" if value is None else str(value))
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @config_app.command("set")
@@ -871,7 +873,7 @@ def config_set(
         else:
             console.print(f"{field} = {current}")
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @app.command()
@@ -905,7 +907,7 @@ def doctor(
                 console.print(f"  [dim]{check.hint}[/dim]")
         console.print("\n[green]System ready.[/green]" if ready else "\nSystem needs attention.")
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
     if needs_attention:
         raise typer.Exit(code=1)
 

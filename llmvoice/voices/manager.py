@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from llmvoice.audio.metadata import AudioMetadata, probe_audio
-from llmvoice.core.exceptions import VoiceError
+from llmvoice.core.exceptions import AudioToolError, VoiceError
 from llmvoice.core.paths import AppPaths
 
 SUPPORTED_AUDIO_EXTENSIONS = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus"}
@@ -31,7 +31,7 @@ class VoiceManager:
 
     def add(self, name: str, source: Path, references: tuple[Path, ...] = ()) -> StoredVoice:
         """Validate and store a voice reference without altering the source."""
-        self._validate_name(name)
+        self.validate_name(name)
         source = source.expanduser().resolve()
         if not source.is_file():
             raise VoiceError(f"Voice file not found: {source}")
@@ -47,13 +47,9 @@ class VoiceManager:
                 raise VoiceError(f"Voice file not found: {reference}")
             if reference.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
                 raise VoiceError(f"Unsupported voice format: {reference.suffix}")
-        metadata = probe_audio(source)
-        if metadata.duration_seconds < MIN_REFERENCE_SECONDS:
-            raise VoiceError(
-                "Reference audio is too short.\n\n"
-                f"Duration   : {metadata.duration_seconds:.1f} sec\n"
-                "Recommended: 6–30 sec"
-            )
+        metadata = self._validate_reference(source)
+        for reference in resolved_sources[1:]:
+            self._validate_reference(reference)
         existing = self._matches(name)
         if existing:
             raise VoiceError(f"Voice '{name}' already exists. Remove it before replacing it.")
@@ -63,11 +59,15 @@ class VoiceManager:
             else self.paths.voices_dir / f"{name}-{index + 1}{reference.suffix.casefold()}"
             for index, reference in enumerate(resolved_sources)
         ]
+        if any(destination.exists() for destination in destinations):
+            raise VoiceError(f"Voice '{name}' or one of its references already exists.")
+        created: list[Path] = []
         try:
             for reference, destination in zip(resolved_sources, destinations):
                 shutil.copy2(reference, destination)
+                created.append(destination)
         except OSError as exc:
-            for destination in destinations:
+            for destination in created:
                 destination.unlink(missing_ok=True)
             raise VoiceError(f"Could not store voice '{name}'.") from exc
         return StoredVoice(
@@ -84,21 +84,27 @@ class VoiceManager:
             for path in self.paths.voices_dir.iterdir()
             if path.is_file()
             and path.suffix.casefold() in SUPPORTED_AUDIO_EXTENSIONS
-            and not re.fullmatch(r".+-\d+", path.stem)
+            and not self._is_additional_reference(path)
         ]
-        return [
-            StoredVoice(
-                name=path.stem,
-                path=path,
-                metadata=probe_audio(path),
-                reference_paths=tuple(self._reference_paths(path.stem)),
+        voices: list[StoredVoice] = []
+        for path in sorted(paths, key=lambda item: item.stem.casefold()):
+            try:
+                metadata = probe_audio(path)
+            except AudioToolError:
+                continue
+            voices.append(
+                StoredVoice(
+                    name=path.stem,
+                    path=path,
+                    metadata=metadata,
+                    reference_paths=tuple(self._reference_paths(path.stem)),
+                )
             )
-            for path in sorted(paths, key=lambda item: item.stem.casefold())
-        ]
+        return voices
 
     def info(self, name: str) -> StoredVoice:
         """Return metadata for one stored voice name."""
-        self._validate_name(name)
+        self.validate_name(name)
         matches = self._matches(name)
         if not matches:
             raise self.not_found(name)
@@ -113,6 +119,7 @@ class VoiceManager:
         )
 
     def remove(self, name: str) -> None:
+        self.validate_name(name)
         matches = self._matches(name)
         if not matches:
             raise self.not_found(name)
@@ -125,7 +132,15 @@ class VoiceManager:
         source = source.expanduser().resolve()
         if not source.is_file() or source.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
             raise VoiceError(f"Unsupported or missing voice file: {source}")
-        destination = self.paths.voices_dir / f"{name}-{len(profile.reference_paths) + 1}{source.suffix.casefold()}"
+        self._validate_reference(source)
+        reference_number = 2
+        while any(
+            path.stem == f"{name}-{reference_number}"
+            for path in self.paths.voices_dir.iterdir()
+            if path.is_file()
+        ):
+            reference_number += 1
+        destination = self.paths.voices_dir / f"{name}-{reference_number}{source.suffix.casefold()}"
         try:
             shutil.copy2(source, destination)
         except OSError as exc:
@@ -141,8 +156,10 @@ class VoiceManager:
         """Resolve a direct file to one reference or a stored voice profile."""
         candidate = Path(value).expanduser()
         if candidate.is_file():
+            if candidate.suffix.casefold() not in SUPPORTED_AUDIO_EXTENSIONS:
+                raise VoiceError(f"Unsupported voice format: {candidate.suffix}")
             return (candidate.resolve(),)
-        self._validate_name(value)
+        self.validate_name(value)
         if not self._matches(value):
             raise self.not_found(value)
         return tuple(self._reference_paths(value))
@@ -157,7 +174,7 @@ class VoiceManager:
             return resolved
         if looks_like_path:
             raise VoiceError(f"Voice file not found: {candidate}")
-        self._validate_name(value)
+        self.validate_name(value)
         matches = self._matches(value)
         if not matches:
             raise self.not_found(value)
@@ -180,8 +197,27 @@ class VoiceManager:
         ]
         return sorted(matches, key=lambda path: (0 if path.stem == name else 1, path.name.casefold()))
 
+    def _is_additional_reference(self, path: Path) -> bool:
+        match = re.fullmatch(r"(.+)-(\d+)", path.stem)
+        if not match:
+            return False
+        # A numeric suffix denotes an additional reference only when its
+        # unsuffixed primary file exists in the voice directory.
+        return bool(self._matches(match.group(1)))
+
     @staticmethod
-    def _validate_name(name: str) -> None:
+    def _validate_reference(source: Path) -> AudioMetadata:
+        metadata = probe_audio(source)
+        if metadata.duration_seconds < MIN_REFERENCE_SECONDS:
+            raise VoiceError(
+                "Reference audio is too short.\n\n"
+                f"Duration   : {metadata.duration_seconds:.1f} sec\n"
+                "Recommended: 6–30 sec"
+            )
+        return metadata
+
+    @staticmethod
+    def validate_name(name: str) -> None:
         if not _VOICE_NAME.fullmatch(name):
             raise VoiceError(
                 "Voice name must be 1-64 characters using letters, numbers, '-' or '_'."

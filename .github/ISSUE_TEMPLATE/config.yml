@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: License and model usage
+    url: https://github.com/yud3-stack/LLMVoice/blob/main/THIRD_PARTY_LICENSES.md
+    about: Review the source and XTTS model license boundaries before commercial use.

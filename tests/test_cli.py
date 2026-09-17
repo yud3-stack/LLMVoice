@@ -160,6 +160,25 @@ def test_voice_remove_confirmation_defaults_to_no(tmp_path, monkeypatch) -> None
     assert (tmp_path / "data" / "voices" / "friday.wav").exists()
 
 
+def test_voice_record_rejects_path_traversal_before_recording(tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(data_dir))
+    record_called = False
+
+    def fail_if_recorded(*args, **kwargs):
+        nonlocal record_called
+        record_called = True
+
+    monkeypatch.setattr("llmvoice.cli.record_audio", fail_if_recorded)
+
+    result = runner.invoke(app, ["voice", "record", "..\\escape", "--yes"])
+
+    assert result.exit_code == 1
+    assert "Voice name" in result.output
+    assert not record_called
+    assert not (data_dir / "cache" / "escape.wav").exists()
+
+
 def test_config_get_set_and_invalid_field(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
     set_result = runner.invoke(app, ["config", "set", "device", "cpu"])
@@ -182,6 +201,21 @@ def test_config_json_outputs_are_parseable(tmp_path, monkeypatch) -> None:
     assert json.loads(set_result.output) == {"field": "device", "value": "cpu"}
     assert json.loads(get_result.output) == {"field": "device", "value": "cpu"}
     assert json.loads(show_result.output)["device"] == "cpu"
+
+
+def test_json_errors_are_machine_readable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+
+    result = runner.invoke(app, ["config", "get", "missing", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "ok": False,
+        "error": "ConfigurationError",
+        "message": "Unknown config field 'missing'.\n\nAvailable fields:\n"
+        "default_voice, default_language, default_speed, output_format, device, engine, "
+        "chunk_size, chunk_pause_ms, crossfade_ms, quality_profile",
+    }
 
 
 def test_doctor_renders_mocked_checks(tmp_path, monkeypatch) -> None:

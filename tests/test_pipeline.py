@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 
 from llmvoice.core.config import AppConfig
-from llmvoice.core.exceptions import EngineError, SpeechGenerationError
+from llmvoice.core.exceptions import EngineError, JobBusyError, SpeechGenerationError
 from llmvoice.core.paths import AppPaths
-from llmvoice.service import SynthesisPlan, SynthesisRequest, VoiceService
+from llmvoice.service import SynthesisPlan, SynthesisRequest, VoiceService, _load_checkpoint
 from llmvoice.tts.base import TTSEngine
 
 
@@ -196,3 +196,22 @@ def test_resume_reuses_completed_chunks(tmp_path, monkeypatch) -> None:
     assert resumed.calls == ["Two.", "Three."]
     assert output.read_bytes() == b"mp3"
     assert not list((paths.cache_dir / "checkpoints").iterdir())
+
+
+def test_malformed_checkpoint_is_discarded(tmp_path) -> None:
+    manifest = tmp_path / "manifest.json"
+    chunks = ["One.", "Two."]
+    manifest.write_text(
+        '{"version": 1, "chunks": ["One.", "Two."], "completed": [1, 1, 9]}',
+        encoding="utf-8",
+    )
+    assert _load_checkpoint(manifest, chunks) == []
+
+
+def test_same_output_job_cannot_run_concurrently(tmp_path) -> None:
+    lock_target = tmp_path / "output.mp3"
+    lock = VoiceService._job_lock(lock_target)
+    with lock:
+        with pytest.raises(JobBusyError):
+            with VoiceService._job_lock(lock_target):
+                pass

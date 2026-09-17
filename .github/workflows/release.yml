@@ -22,7 +22,6 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
       - name: Parse installer and run PowerShell regressions
         shell: powershell
         run: |
@@ -49,34 +48,27 @@ jobs:
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
-
       - name: Validate tag against package metadata
         run: python scripts/release.py validate-tag --tag "$GITHUB_REF_NAME"
-
       - name: Install release dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes ffmpeg
           python -m pip install --upgrade pip
           python -m pip install -e ".[dev]"
-
       - name: Run release test gate
         run: |
           python -m pytest
           python -m pytest -m integration
-
       - name: Compile package
         run: python -m compileall -q llmvoice scripts
-
       - name: Validate dependency environment
         run: python -m pip check
-
       - name: Parse PowerShell installer
         shell: pwsh
         run: |
@@ -91,10 +83,8 @@ jobs:
             $errors | ForEach-Object { Write-Error $_.Message }
             exit 1
           }
-
       - name: Build wheel and source distribution
         run: python -m build
-
       - name: Prepare signed-by-checksum release asset set
         run: |
           python scripts/release.py prepare \
@@ -102,13 +92,11 @@ jobs:
             --dist-dir dist \
             --installer installer/install.ps1 \
             --output-dir release-assets
-
       - name: Validate release artifacts
         run: |
           python scripts/release.py validate \
             --tag "$GITHUB_REF_NAME" \
             --assets-dir release-assets
-
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -117,4 +105,6 @@ jobs:
             release-assets/* \
             --verify-tag \
             --title "LLMVoice $GITHUB_REF_NAME" \
-            --generate-notes
+            --generate-notes \
+            --prerelease \
+            --latest=false

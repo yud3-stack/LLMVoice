@@ -3,19 +3,23 @@ from __future__ import annotations
 import logging
 import hashlib
 import json
+import os
 import shutil
 import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from llmvoice.audio.merge import encode_mp3, merge_wav_files, pause_after_text
+from llmvoice.audio.merge import encode_mp3, encode_wav, merge_wav_files, pause_after_text
 from llmvoice.audio.reference import prepare_reference
 from llmvoice.core.config import AppConfig
 from llmvoice.core.exceptions import (
     EngineError,
     InputFileError,
     OutputExistsError,
+    JobBusyError,
     SpeechGenerationError,
 )
 from llmvoice.core.paths import AppPaths
@@ -51,10 +55,19 @@ ProgressCallback = Callable[[int, int], None]
 StageCallback = Callable[[str], None]
 
 
-def _checkpoint_key(request: SynthesisRequest, plan: SynthesisPlan) -> str:
+def _checkpoint_key(request: SynthesisRequest, plan: SynthesisPlan, config: AppConfig) -> str:
     """Create a stable identity for one synthesis configuration."""
     input_stat = request.input_path.stat()
     voice_paths = request.voice_paths or (request.voice_path,)
+    denoise_model = request.denoise_model
+    denoise_identity = None
+    if denoise_model is not None:
+        model_stat = denoise_model.stat()
+        denoise_identity = {
+            "path": str(denoise_model.resolve()),
+            "size": model_stat.st_size,
+            "mtime_ns": model_stat.st_mtime_ns,
+        }
     payload = {
         "input": str(request.input_path.resolve()),
         "input_size": input_stat.st_size,
@@ -70,6 +83,12 @@ def _checkpoint_key(request: SynthesisRequest, plan: SynthesisPlan) -> str:
         ],
         "language": plan.language,
         "speed": request.speed,
+        "quality_profile": request.quality_profile,
+        "denoise_model": denoise_identity,
+        "chunk_pause_ms": config.chunk_pause_ms,
+        "crossfade_ms": config.crossfade_ms,
+        "engine": config.engine,
+        "device": config.device,
         "chunks": plan.chunks,
     }
     encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
@@ -96,14 +115,21 @@ def _load_checkpoint(path: Path, chunks: list[str]) -> list[int]:
         completed = payload.get("completed", [])
         if not isinstance(completed, list):
             return []
-        return [index for index in completed if isinstance(index, int)]
+        if any(
+            not isinstance(index, int) or index < 1 or index > len(chunks)
+            for index in completed
+        ):
+            return []
+        if len(set(completed)) != len(completed):
+            return []
+        return sorted(completed)
     except (OSError, UnicodeError, json.JSONDecodeError):
         return []
 
 
-def output_path_for(input_path: Path, output: Path | None) -> Path:
+def output_path_for(input_path: Path, output: Path | None, output_format: str = "mp3") -> Path:
     if output is None:
-        return input_path.with_suffix(".mp3")
+        return input_path.with_suffix(f".{output_format}")
     return output.expanduser().resolve()
 
 
@@ -154,7 +180,46 @@ class VoiceService:
         self.paths = paths
         self.config = config
 
+    @staticmethod
+    @contextmanager
+    def _job_lock(path: Path):
+        lock_path = path.with_name(f".{path.name}.llmvoice-lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            try:
+                descriptor = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                break
+            except FileExistsError as exc:
+                try:
+                    stale = time.time() - lock_path.stat().st_mtime > 24 * 60 * 60
+                except OSError:
+                    stale = False
+                if stale:
+                    lock_path.unlink(missing_ok=True)
+                    continue
+                raise JobBusyError(
+                    "This synthesis job is already running. Wait for it to finish "
+                    "or remove the stale lock after confirming no job is active."
+                ) from exc
+        try:
+            os.write(descriptor, str(os.getpid()).encode("ascii"))
+            os.close(descriptor)
+            yield
+        finally:
+            lock_path.unlink(missing_ok=True)
+
     def run(
+        self,
+        request: SynthesisRequest,
+        plan: SynthesisPlan,
+        progress: ProgressCallback,
+        stage: StageCallback,
+        resume: bool = False,
+    ) -> None:
+        with self._job_lock(request.output_path):
+            self._run_locked(request, plan, progress, stage, resume)
+
+    def _run_locked(
         self,
         request: SynthesisRequest,
         plan: SynthesisPlan,
@@ -190,7 +255,7 @@ class VoiceService:
         self.paths.cache_dir.mkdir(parents=True, exist_ok=True)
         checkpoint_dir: Path | None = None
         if resume:
-            checkpoint_dir = self.paths.cache_dir / "checkpoints" / _checkpoint_key(request, plan)
+            checkpoint_dir = self.paths.cache_dir / "checkpoints" / _checkpoint_key(request, plan, self.config)
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
             manifest = checkpoint_dir / "manifest.json"
             completed = _load_checkpoint(manifest, plan.chunks) if manifest.exists() else []
@@ -251,7 +316,10 @@ class VoiceService:
                 encode_source.is_file(),
                 encode_source.stat().st_size if encode_source.is_file() else None,
             )
-            encode_mp3(encode_source, request.output_path, request.speed)
+            if request.output_path.suffix.casefold() == ".wav":
+                encode_wav(encode_source, request.output_path, request.speed)
+            else:
+                encode_mp3(encode_source, request.output_path, request.speed)
             stage("encoding_done")
             if checkpoint_dir is not None:
                 shutil.rmtree(checkpoint_dir, ignore_errors=True)

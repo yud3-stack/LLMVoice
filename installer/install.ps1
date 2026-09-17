@@ -246,6 +246,10 @@ function Assert-Manifest {
     if ([string]$Manifest.wheel.sha256 -notmatch "^[A-Fa-f0-9]{64}$") {
         Throw-InstallerError "Manifest wheel checksum is invalid."
     }
+    $wheelSize = 0L
+    if (-not [long]::TryParse([string]$Manifest.wheel.size, [ref]$wheelSize) -or $wheelSize -le 0) {
+        Throw-InstallerError "Manifest wheel size is invalid."
+    }
     if ([string]$Manifest.python.architecture -ne "x64") {
         Throw-InstallerError "This installer supports x64 Python runtimes only."
     }
@@ -368,6 +372,17 @@ function Assert-Manifest {
         if ([string]$dependency -notmatch "^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.+-]+$") {
             Throw-InstallerError "Manifest contains an invalid application dependency."
         }
+    }
+    $allowedApplicationDependencies = @("coqui-tts", "transformers")
+    $dependencyNames = @(
+        $applicationDependencies | ForEach-Object {
+            ([string]$_ -split "==", 2)[0].ToLowerInvariant()
+        }
+    )
+    if ($dependencyNames.Count -ne $allowedApplicationDependencies.Count -or
+        @($dependencyNames | Where-Object { $allowedApplicationDependencies -notcontains $_ }).Count -ne 0 -or
+        @($allowedApplicationDependencies | Where-Object { $dependencyNames -notcontains $_ }).Count -ne 0) {
+        Throw-InstallerError "Manifest contains an unexpected application dependency."
     }
 }
 
@@ -1390,6 +1405,10 @@ try {
     Write-Section "Downloading package"
     Invoke-SecureDownload -Uri $wheelUri -Destination $wheelPath
     Write-Ok "Downloaded"
+
+    if ((Get-Item -LiteralPath $wheelPath).Length -ne [long]$manifest.wheel.size) {
+        Throw-InstallerError "Downloaded package size does not match the release manifest."
+    }
 
     Write-Host "Verifying SHA256..."
     $actualHash = (Get-FileHash -LiteralPath $wheelPath -Algorithm SHA256).Hash.ToLowerInvariant()

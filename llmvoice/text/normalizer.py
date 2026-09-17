@@ -47,6 +47,8 @@ def _under_thousand(value: int) -> str:
 
 
 def _turkish_number(value: int) -> str:
+    if value == 0:
+        return _ONES[0]
     if value < 1000:
         return _under_thousand(value)
     thousands, remainder = divmod(value, 1000)
