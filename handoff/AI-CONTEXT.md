@@ -21,4 +21,4 @@
 - Config doğrulaması bilinmeyen alanları, geçersiz engine değerlerini ve desteklenmeyen dil kodlarını reddeder.
 - Desktop render voice profile adını Python CLI'a verir; Python tarafı çoklu referansları çözer.
 - Synthesis job output path üzerinde lock kullanır; resume checkpoint kayıtları doğrulanır.
-- Son oturum notu: [[2026-09-17-proje-yapisi-guvenlik-duzeltmeleri]]
+- Son oturum notu: [[2026-09-17-early-access-release]]

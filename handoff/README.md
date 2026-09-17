@@ -12,7 +12,7 @@ notu ve ilgili dosyaları okuyun. Uzun logları nota kopyalamak yerine komutu,
 
 - Her çalışma oturumu `YYYY-MM-DD-konu.md` biçiminde ayrı bir not kullanır.
 - Notlarda yapılan değişiklikler, test sonucu, bilinen sorunlar ve sonraki adım bulunur.
-- En güncel not: [[2026-09-17-proje-yapisi-guvenlik-duzeltmeleri]]
+- En güncel not: [[2026-09-17-early-access-release]]
 
 ## Oturum Protokolü
 
