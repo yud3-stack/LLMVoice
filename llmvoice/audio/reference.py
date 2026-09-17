@@ -72,7 +72,7 @@ def prepare_reference(
     try:
         run_tool(
             [
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-threads", "1", "-y", "-i", str(source),
                 "-map", "0:a:0", "-ac", "1", "-ar", "24000",
                  "-af", filter_chain,
                 "-c:a", "pcm_s16le", str(temporary),

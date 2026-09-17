@@ -79,7 +79,7 @@ def merge_wav_files(
     for index, chunk in enumerate(chunks):
         inputs.append(chunk)
         if index < len(chunks) - 1 and pauses[index] > 0:
-            pause_length = pauses[index] + (2 * crossfade_ms if crossfade_ms else 0)
+            pause_length = pauses[index] + (4 * crossfade_ms if crossfade_ms else 0)
             inputs.append(_create_pause(destination, pause_length))
     if len(inputs) < 2:
         crossfade_ms = 0
@@ -100,7 +100,7 @@ def merge_wav_files(
         for input_path in inputs:
             arguments.extend(["-i", input_path.resolve().as_posix()])
         duration = f"{crossfade_ms / 1000:.3f}"
-        labels = [f"a{index}" for index in range(len(inputs))]
+        labels = [f"{index}:a" for index in range(len(inputs))]
         filters = []
         current = f"[{labels[0]}][{labels[1]}]"
         filters.append(f"{current}acrossfade=d={duration}:c1=tri:c2=tri[x0]")
