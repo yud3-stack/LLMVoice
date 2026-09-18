@@ -1,59 +1,425 @@
-import { useEffect, useLayoutEffect, useState } from "react";
-import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalSize } from "@tauri-apps/api/dpi";
-import { listen } from "@tauri-apps/api/event";
+import { useEffect, useCallback, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { check } from "@tauri-apps/plugin-updater";
-import { relaunch } from "@tauri-apps/plugin-process";
-import { ArrowLeft, AudioLines, Bell, ChevronDown, Download, FileText, FolderOpen, Laptop, Menu, MessageSquarePlus, Mic2, MoreVertical, Plus, Save, Search, Settings2 } from "lucide-react";
-import { getUiLanguage, Translation, translations, UiLanguage } from "./i18n";
+import { AudioLines } from "lucide-react";
 
-type Project = { name: string; created_at: string; updated_at: string; voice?: string | null; language: string; profile: string; speed: number; output_format: string };
-type Voice = { name: string };
-type OutputFile = { name: string; path: string };
+import { AppProvider, useApp } from "./context/AppContext";
+import { useProjects, useVoices, useOutputs, useUpdater, useWindowSize, useRenderProgress, useRenderLog } from "./hooks/useTauriCommands";
+import { TopBar } from "./components/TopBar";
+import { Launcher } from "./components/Launcher";
+import { Editor } from "./components/Editor";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { ProjectModal } from "./components/ProjectModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SetupWizard } from "./components/SetupWizard";
+import { getUiLanguage, translations, type UiLanguage } from "./i18n";
+import type { Project, RenderProgressEvent } from "./hooks/useTauriCommands";
+import "./styles.css";
 
-const escapeHtml = (value: string): string => value.replace(/[&<>'"]/g, (character) => ({
-  "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;",
-}[character] ?? character));
+function AppContent() {
+  const { state, dispatch } = useApp();
+  const { loadProjects, createProject, renameProject, deleteProject, saveProject, readProjectScript, renderProject } = useProjects();
+  const { loadVoices, addVoice } = useVoices();
+  const { listOutputs, revealOutput } = useOutputs();
+  const { checkForUpdate, downloadAndInstall } = useUpdater();
+  const { checkSize } = useWindowSize();
+  const [renderProgress, setRenderProgress] = useState<RenderProgressEvent>({ phase: "starting", progress: 0 });
+  const [renderLogs, setRenderLogs] = useState<string[]>([]);
+  const [renderUiVisible, setRenderUiVisible] = useState(false);
+  const [consoleCollapsed, setConsoleCollapsed] = useState(false);
+  const [showSetup, setShowSetup] = useState(true);
+  const renderHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const consoleLines = useRef<HTMLDivElement | null>(null);
 
-function App() {
-  const [query, setQuery] = useState(""); const [projects, setProjects] = useState<Project[]>([]); const [voices, setVoices] = useState<Voice[]>([]); const [selectedVoice, setSelectedVoice] = useState(""); const [profile, setProfile] = useState("balanced"); const [language, setLanguage] = useState("tr"); const [speed, setSpeed] = useState(1); const [outputFormat, setOutputFormat] = useState("mp3"); const [activeProject, setActiveProject] = useState<Project | null>(null); const [newProjectOpen, setNewProjectOpen] = useState(false); const [settingsOpen, setSettingsOpen] = useState(false); const [newProjectName, setNewProjectName] = useState(""); const [script, setScript] = useState(""); const [saved, setSaved] = useState(true); const [rendering, setRendering] = useState(false); const [lastOutput, setLastOutput] = useState(""); const [uiLanguage, setUiLanguage] = useState<UiLanguage>(getUiLanguage);
-  const t = translations[uiLanguage]; const window = getCurrentWindow();
-  useLayoutEffect(() => { document.querySelectorAll<HTMLElement>(".project-card .card-menu").forEach((menu) => { menu.className = "project-menu-hidden"; }); }, [projects]);
-  useLayoutEffect(() => { document.querySelectorAll<HTMLElement>(".project-card:not(.fresh) .card-menu").forEach((legacyMenu) => { const card = legacyMenu.closest<HTMLElement>(".project-card"); const name = card?.querySelector<HTMLElement>(".card-copy strong")?.textContent?.trim(); if (!name) return; legacyMenu.className = "project-actions"; legacyMenu.innerHTML = `<button type="button" data-action="rename">✎ <span>${t.renameProject}</span></button><button type="button" data-action="delete">⌫ <span>${t.deleteProject}</span></button>`; const handler = (event: Event) => { event.preventDefault(); event.stopPropagation(); const action = (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.dataset.action; if (action === "rename") { const nextName = prompt(uiLanguage === "tr" ? "Yeni proje adı:" : "New project name:", name); if (!nextName?.trim() || nextName.trim() === name) return; void invoke<Project>("rename_project", { oldName: name, newName: nextName.trim() }).then((updated) => setProjects((items) => items.map((item) => item.name === name ? updated : item))).catch((error) => alert(String(error))); } if (action === "delete" && confirm(uiLanguage === "tr" ? `"${name}" projesi silinsin mi?` : `Delete project "${name}"?`)) void invoke("delete_project", { name }).then(() => setProjects((items) => items.filter((item) => item.name !== name))).catch((error) => alert(String(error))); }; legacyMenu.addEventListener("click", handler); }); }, [projects, uiLanguage, t]);
-  useEffect(() => { const guard = (event: Event) => { const target = event.target as HTMLElement; if (target.closest(".project-actions-menu")) event.preventDefault(); }; document.addEventListener("click", guard, true); return () => document.removeEventListener("click", guard, true); }, []);
-  useEffect(() => { const rename = (event: Event) => { const project = (event as CustomEvent<Project>).detail; const nextName = prompt(uiLanguage === "tr" ? "Yeni proje adı:" : "New project name:", project.name); if (!nextName?.trim() || nextName.trim() === project.name) return; void invoke<Project>("rename_project", { oldName: project.name, newName: nextName.trim() }).then((updated) => { setProjects((items) => items.map((item) => item.name === project.name ? updated : item)); setActiveProject(updated); }).catch((error) => alert(String(error))); }; const remove = (event: Event) => { const project = (event as CustomEvent<Project>).detail; if (!confirm(uiLanguage === "tr" ? `"${project.name}" projesi silinsin mi?` : `Delete project "${project.name}"?`)) return; void invoke("delete_project", { name: project.name }).then(() => { setProjects((items) => items.filter((item) => item.name !== project.name)); setActiveProject(null); }).catch((error) => alert(String(error))); }; globalThis.addEventListener("project-rename", rename); globalThis.addEventListener("project-delete", remove); return () => { globalThis.removeEventListener("project-rename", rename); globalThis.removeEventListener("project-delete", remove); }; }, [uiLanguage]);
-  useEffect(() => { if (!activeProject) return; const inspector = document.querySelector<HTMLElement>(".inspector"); if (!inspector) return; const actions = document.createElement("div"); actions.className = "detail-project-actions"; actions.innerHTML = `<button type="button" data-action="rename">✎ <span>${t.renameProject}</span></button><button type="button" data-action="delete">⌫ <span>${t.deleteProject}</span></button>`; const handler = (event: Event) => { event.stopPropagation(); const action = (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.dataset.action; if (action) globalThis.dispatchEvent(new CustomEvent(`project-${action}`, { detail: activeProject })); }; actions.addEventListener("click", handler); inspector.append(actions); return () => actions.remove(); }, [activeProject, t]);
-  useEffect(() => { document.documentElement.lang = uiLanguage; document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((element) => { const key = element.dataset.i18n as keyof Translation; if (key in t) element.textContent = t[key]; }); const select = document.getElementById("language-select") as HTMLSelectElement | null; if (select) select.value = uiLanguage; }, [uiLanguage, t]);
-  useEffect(() => { void invoke<Project[]>("list_projects").then(setProjects).catch(() => undefined); void invoke<Voice[]>("list_voices").then((items) => { setVoices(items); setSelectedVoice(items[0]?.name ?? ""); }).catch(() => undefined); }, []);
-  useEffect(() => { let cancelled = false; void check().then((update) => { if (!update || cancelled) return; const isTurkish = getUiLanguage() === "tr"; const accepted = confirm(isTurkish ? `Yeni sürüm ${update.version} bulundu. Şimdi indirip yüklemek ister misiniz?` : `Version ${update.version} is available. Download and install it now?`); if (!accepted) return; return update.downloadAndInstall().then(() => relaunch()); }).catch(() => undefined); return () => { cancelled = true; }; }, []);
-   useEffect(() => { void invoke<OutputFile[]>("list_outputs").then((items) => { const popover = document.getElementById("outputs-popover"); if (!popover) return; popover.innerHTML = `<strong>${t.recentVoiceovers}</strong>` + (items.length ? items.slice(0, 8).map((item) => `<div class="output-entry"><span class="output-name" title="${escapeHtml(item.path)}">${escapeHtml(item.name)}</span><span class="output-actions"><button class="output-action folder-action" title="${t.showFolder}">📁</button><button class="output-action play-action" title="${t.playAudio}">▶</button></span></div>`).join("") : `<span class="outputs-empty">${t.noRendered}</span>`); popover.querySelectorAll<HTMLElement>(".output-entry").forEach((row) => { const path = row.querySelector<HTMLElement>(".output-name")?.title; if (!path) return; row.querySelector(".folder-action")?.addEventListener("click", () => void invoke("reveal_output", { path })); row.querySelector(".play-action")?.addEventListener("click", () => { const player = document.querySelector<HTMLAudioElement>("#studio-audio"); if (!player) return; player.src = convertFileSrc(path); void player.play(); document.documentElement.classList.add("player-visible"); }); }); }).catch(() => undefined); }, [lastOutput, t]);
-  useEffect(() => { const button = document.querySelector<HTMLButtonElement>(".chrome-actions .chrome-button:nth-child(3)"); const popover = document.getElementById("outputs-popover"); if (!button || !popover) return; const toggle = () => popover.classList.toggle("visible"); button.addEventListener("click", toggle); return () => button.removeEventListener("click", toggle); }, []);
-  useEffect(() => { const close = document.getElementById("player-close"); const player = document.querySelector<HTMLAudioElement>("#studio-audio"); if (!close) return; const hide = () => { player?.pause(); document.documentElement.classList.remove("player-visible"); }; close.addEventListener("click", hide); return () => close.removeEventListener("click", hide); }, []);
-  useEffect(() => { const button = document.querySelector<HTMLButtonElement>(".chrome-actions .chrome-button:nth-child(2)"); const panel = document.getElementById("feedback-panel"); const form = document.getElementById("feedback-form") as HTMLFormElement | null; const close = panel?.querySelector<HTMLButtonElement>(".feedback-close"); const message = document.getElementById("feedback-message") as HTMLTextAreaElement | null; if (!button || !panel || !form || !close || !message) return; const show = () => { panel.classList.add("visible"); globalThis.setTimeout(() => message.focus(), 100); }; const hide = () => { panel.classList.remove("visible"); }; const submit = (event: Event) => { event.preventDefault(); if (!message.value.trim()) return; const url = `https://github.com/yud3-stack/LLMVoice/issues/new?title=${encodeURIComponent("LLMVoice feedback")}&body=${encodeURIComponent(message.value.trim())}`; globalThis.open(url, "_blank"); hide(); message.value = ""; }; button.title = uiLanguage === "tr" ? "Geri bildirim" : "Feedback"; button.addEventListener("click", show); close.addEventListener("click", hide); panel.addEventListener("mousedown", (event) => { if (event.target === panel) hide(); }); form.addEventListener("submit", submit); return () => { button.removeEventListener("click", show); close.removeEventListener("click", hide); form.removeEventListener("submit", submit); }; }, [uiLanguage]);
-  useEffect(() => { const message = document.getElementById("feedback-message") as HTMLTextAreaElement | null; if (message) message.placeholder = t.feedbackPlaceholder; }, [t]);
-  useEffect(() => { const handlers: Array<[Element, EventListener]> = []; document.querySelectorAll<HTMLElement>(".project-card:not(.fresh) .card-menu").forEach((menu) => { const handler: EventListener = (event) => { event.stopPropagation(); const card = menu.closest<HTMLElement>(".project-card"); const name = card?.querySelector<HTMLElement>(".card-copy strong")?.textContent?.trim(); if (!name) return; const action = prompt(uiLanguage === "tr" ? "İşlem seçin: yeniden adlandır veya sil" : "Choose: rename or delete", "rename"); if (action?.toLowerCase() === "rename") { const nextName = prompt(uiLanguage === "tr" ? "Yeni proje adı:" : "New project name:", name); if (!nextName?.trim() || nextName.trim() === name) return; void invoke<Project>("rename_project", { oldName: name, newName: nextName.trim() }).then((updated) => setProjects((items) => items.map((item) => item.name === name ? updated : item))).catch((error) => alert(String(error))); } else if (action?.toLowerCase() === "delete" && confirm(uiLanguage === "tr" ? `"${name}" projesi silinsin mi?` : `Delete project "${name}"?`)) { void invoke("delete_project", { name }).then(() => setProjects((items) => items.filter((item) => item.name !== name))).catch((error) => alert(String(error))); } }; menu.addEventListener("click", handler); handlers.push([menu, handler]); }); return () => handlers.forEach(([menu, handler]) => menu.removeEventListener("click", handler)); }, [projects, uiLanguage]);
-  useEffect(() => { const consoleElement = document.getElementById("render-console"); const close = document.getElementById("render-console-close"); const open = document.getElementById("render-console-toggle"); if (!consoleElement || !close || !open) return; const hide = () => { consoleElement.classList.add("collapsed"); open.classList.add("visible"); }; const show = () => { consoleElement.classList.remove("collapsed"); open.classList.remove("visible"); }; close.addEventListener("click", hide); open.addEventListener("click", show); return () => { close.removeEventListener("click", hide); open.removeEventListener("click", show); }; }, []);
-  useEffect(() => { let unlisten: (() => void) | undefined; void listen<{ phase: string; progress: number }>("render-progress", (event) => { document.documentElement.style.setProperty("--render-progress", `${event.payload.progress}%`); const value = document.querySelector<HTMLElement>(".render-progress-value"); if (value) value.textContent = `${event.payload.progress}%`; const label = document.querySelector<HTMLElement>(".render-progress-label"); if (label) label.textContent = event.payload.phase === "rendering" ? t.generating : event.payload.phase === "complete" ? t.renderComplete : t.preparing; if (event.payload.phase === "complete" || event.payload.phase === "failed") globalThis.setTimeout(() => document.documentElement.classList.remove("is-rendering"), 900); }).then((cleanup) => { unlisten = cleanup; }); return () => unlisten?.(); }, [t]);
-  useEffect(() => { let unlisten: (() => void) | undefined; void listen<string>("render-log", (event) => { const lines = document.querySelector<HTMLElement>(".render-console-lines"); if (!lines) return; const message = event.payload === "Preparing project and voice reference..." ? (uiLanguage === "tr" ? "Proje ve ses referansı hazırlanıyor..." : event.payload) : event.payload === "Python voice worker started." ? (uiLanguage === "tr" ? "Python ses işçisi başlatıldı." : event.payload) : event.payload === "Audio file written successfully." ? (uiLanguage === "tr" ? "Ses dosyası başarıyla yazıldı." : event.payload) : event.payload === "Voice worker exited with an error." ? (uiLanguage === "tr" ? "Ses işçisi hata ile sonlandı." : event.payload) : event.payload; const line = document.createElement("div"); line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`; lines.appendChild(line); lines.scrollTop = lines.scrollHeight; }); return () => unlisten?.(); }, [uiLanguage]);
-  useEffect(() => { if (!activeProject) return; setSelectedVoice(activeProject.voice ?? voices[0]?.name ?? ""); setProfile(activeProject.profile); setLanguage(activeProject.language); setSpeed(activeProject.speed); setOutputFormat(activeProject.output_format); void invoke<string>("read_project_script", { name: activeProject.name }).then(setScript).catch(() => setScript("")); }, [activeProject, voices]);
-   useEffect(() => { document.querySelectorAll<HTMLSelectElement>(".editor-controls select:not([data-customized])").forEach((select) => { select.dataset.customized = "true"; select.hidden = true; const wrapper = document.createElement("div"); wrapper.className = "custom-setting-select"; select.parentElement?.insertBefore(wrapper, select); const trigger = document.createElement("button"); trigger.type = "button"; trigger.className = "select-field voice-trigger"; const menu = document.createElement("div"); menu.className = "voice-menu"; menu.hidden = true; const update = () => { trigger.textContent = select.selectedOptions[0]?.textContent ?? ""; const icon = document.createElement("span"); icon.innerHTML = "<svg width=\"15\" height=\"15\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"m6 9 6 6 6-6\"/></svg>"; trigger.append(icon); menu.querySelectorAll(".voice-option").forEach((option) => option.classList.toggle("selected", (option as HTMLElement).dataset.value === select.value)); }; Array.from(select.options).forEach((option) => { const item = document.createElement("button"); item.type = "button"; item.className = "voice-option"; item.dataset.value = option.value; const optionIcon = document.createElement("span"); optionIcon.className = "option-icon"; optionIcon.textContent = "♪"; item.append(optionIcon, document.createTextNode(option.textContent ?? "")); item.addEventListener("click", () => { select.value = option.value; select.dispatchEvent(new Event("change", { bubbles: true })); menu.hidden = true; trigger.classList.remove("open"); update(); }); menu.append(item); }); trigger.addEventListener("click", () => { menu.hidden = !menu.hidden; trigger.classList.toggle("open", !menu.hidden); }); select.addEventListener("change", update); wrapper.append(trigger, menu); update(); }); }, [activeProject, t]);
-  useEffect(() => { void window.outerSize().then((size) => { if (size.height < 560) void window.setSize(new LogicalSize(1440, 920)); }); }, [window]);
-  useEffect(() => { const handlers: Array<[EventTarget, EventListener]> = []; document.querySelectorAll<HTMLElement>(".project-card:not(.fresh) .card-menu").forEach((menu) => { const card = menu.closest<HTMLElement>(".project-card"); const name = card?.querySelector<HTMLElement>(".card-copy strong")?.textContent?.trim(); if (!name || card?.querySelector(".project-actions-menu")) return; const popup = document.createElement("div"); popup.className = "project-actions-menu"; popup.innerHTML = `<button type="button" data-action="rename"><span class="action-icon">✎</span>${t.renameProject}</button><button type="button" data-action="delete"><span class="action-icon">⌫</span>${t.deleteProject}</button>`; card?.append(popup); const close = (event: Event) => { event.stopPropagation(); popup.hidden = true; }; const handler: EventListener = (event) => { event.stopImmediatePropagation(); popup.hidden = !popup.hidden; }; const actionHandler: EventListener = (event) => { event.stopPropagation(); const action = (event.target as HTMLElement).closest<HTMLButtonElement>("button")?.dataset.action; if (action === "rename") { const nextName = prompt(uiLanguage === "tr" ? "Yeni proje adı:" : "New project name:", name); if (!nextName?.trim() || nextName.trim() === name) return; void invoke<Project>("rename_project", { oldName: name, newName: nextName.trim() }).then((updated) => setProjects((items) => items.map((item) => item.name === name ? updated : item))).catch((error) => alert(String(error))); } if (action === "delete" && confirm(uiLanguage === "tr" ? `"${name}" projesi silinsin mi?` : `Delete project "${name}"?`)) void invoke("delete_project", { name }).then(() => setProjects((items) => items.filter((item) => item.name !== name))).catch((error) => alert(String(error))); popup.hidden = true; }; menu.addEventListener("click", handler, true); popup.addEventListener("click", actionHandler); document.addEventListener("click", close); handlers.push([menu, handler], [popup, actionHandler], [document, close]); popup.hidden = true; }); return () => handlers.forEach(([element, handler]) => element.removeEventListener("click", handler)); }, [projects, uiLanguage, t]);
-  const addVoice = async () => { const source = await open({ multiple: false, filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"] }] }); if (typeof source !== "string") return; const base = source.split(/[\\/]/).pop()?.split(".")[0] ?? "voice"; const name = prompt(t.voiceName, base); if (!name) return; try { const voice = await invoke<Voice>("add_voice", { name, source }); setVoices((items) => [...items, voice]); setSelectedVoice(voice.name); } catch (error) { alert(String(error)); } };
-  const createProject = async () => { if (!newProjectName.trim()) return; try { const project = await invoke<Project>("create_project", { name: newProjectName }); setProjects((current) => [project, ...current]); setNewProjectName(""); setNewProjectOpen(false); setActiveProject(project); setScript(""); } catch (error) { alert(String(error)); } };
-  const saveProject = async () => { if (!activeProject) return; const updated = { ...activeProject, voice: selectedVoice || null, profile, language, speed, output_format: outputFormat }; await invoke("save_project", { project: updated, script }); setActiveProject(updated); setProjects((items) => items.map((item) => item.name === updated.name ? updated : item)); setSaved(true); };
-  const renderProject = async () => { if (!activeProject || rendering) return; try { await saveProject(); const lines = document.querySelector<HTMLElement>(".render-console-lines"); if (lines) lines.replaceChildren(); document.getElementById("render-console")?.classList.remove("collapsed"); document.getElementById("render-console-toggle")?.classList.remove("visible"); setRendering(true); document.documentElement.classList.add("is-rendering"); const output = await invoke<string>("render_project", { project: { ...activeProject, voice: selectedVoice || null, profile, language, speed, output_format: outputFormat } }); setLastOutput(output); alert(t.renderedSuccess); } catch (error) { alert(String(error)); } finally { setRendering(false); } };
-  return <div className="launcher"><TopBar window={window} onMenu={() => setNewProjectOpen(true)} t={t} />{activeProject ? <Editor project={activeProject} script={script} voices={voices} selectedVoice={selectedVoice} setSelectedVoice={(v) => { setSelectedVoice(v); setSaved(false); }} profile={profile} setProfile={(v) => { setProfile(v); setSaved(false); }} language={language} setLanguage={(v) => { setLanguage(v); setSaved(false); }} speed={speed} setSpeed={(v) => { setSpeed(v); setSaved(false); }} outputFormat={outputFormat} setOutputFormat={(v) => { setOutputFormat(v); setSaved(false); }} saved={saved} setScript={(v) => { setScript(v); setSaved(false); }} onBack={() => setActiveProject(null)} onSave={() => void saveProject()} onRender={() => void renderProject()} t={t} /> : <Launcher query={query} setQuery={setQuery} projects={projects} onNew={() => setNewProjectOpen(true)} onOpen={setActiveProject} onSettings={() => setSettingsOpen(true)} t={t} />}{settingsOpen && <SettingsPanel voices={voices} language={uiLanguage} onLanguage={(value) => { localStorage.setItem("llmvoice.ui-language", value); setUiLanguage(value); }} onAdd={() => void addVoice()} onClose={() => setSettingsOpen(false)} t={t} />}{newProjectOpen && <div className="modal-backdrop" onMouseDown={() => setNewProjectOpen(false)}><form className="project-modal" onSubmit={(event) => { event.preventDefault(); void createProject(); }} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={() => setNewProjectOpen(false)}>×</button><span className="modal-kicker">{t.newSession}</span><h2>{t.createVoiceover}</h2><p>{t.sessionDescription}</p><input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder={t.projectName} /><button className="modal-submit" type="submit">{t.createProject}</button></form></div>}</div>;
+  const t = translations[state.uiLanguage];
+
+  useEffect(() => {
+    document.documentElement.lang = state.uiLanguage;
+  }, [state.uiLanguage]);
+
+  useEffect(() => {
+    if (showSetup) return;
+    void loadProjects()
+      .then((projects) => dispatch({ type: "SET_PROJECTS", payload: projects }))
+      .catch((error) => alert(String(error)));
+    void loadVoices()
+      .then((voices) => dispatch({ type: "SET_VOICES", payload: voices }))
+      .catch((error) => alert(String(error)));
+    void checkSize().catch((error) => console.error("Window resize failed", error));
+  }, [loadProjects, loadVoices, checkSize, dispatch, showSetup]);
+
+  useEffect(() => {
+    const refreshVoices = () => {
+      void loadVoices()
+        .then((voices) => dispatch({ type: "SET_VOICES", payload: voices }))
+        .catch((error) => console.error("Voice refresh failed", error));
+    };
+    window.addEventListener("focus", refreshVoices);
+    return () => window.removeEventListener("focus", refreshVoices);
+  }, [loadVoices, dispatch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkForUpdate().then((update) => {
+      if (!update || cancelled) return;
+      const isTurkish = getUiLanguage() === "tr";
+      const accepted = confirm(
+        isTurkish
+          ? `Yeni sürüm ${update.version} bulundu. Şimdi indirip yüklemek ister misiniz?`
+          : `Version ${update.version} is available. Download and install it now?`
+      );
+      if (!accepted) return;
+      downloadAndInstall(update);
+    });
+    return () => { cancelled = true; };
+  }, [checkForUpdate, downloadAndInstall]);
+
+  const handleRenderProgress = useCallback((event: RenderProgressEvent) => {
+    const progress = Math.max(0, Math.min(100, Math.round(event.progress)));
+    setRenderProgress({ phase: event.phase, progress, indeterminate: event.indeterminate });
+    setRenderUiVisible(true);
+    if (event.phase === "complete" || event.phase === "failed") {
+      if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+      renderHideTimer.current = setTimeout(() => setRenderUiVisible(false), 2200);
+    }
+  }, []);
+
+  const handleRenderLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setRenderLogs((current) => [...current.slice(-99), `[${timestamp}] ${message}`]);
+  }, []);
+
+  useRenderProgress(handleRenderProgress);
+  useRenderLog(state.uiLanguage, handleRenderLog);
+
+  useEffect(() => {
+    const element = consoleLines.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [renderLogs]);
+
+  useEffect(() => () => {
+    if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+  }, []);
+
+  useEffect(() => {
+    void listOutputs()
+      .then((outputs) => dispatch({ type: "SET_OUTPUTS", payload: outputs }))
+      .catch((error) => console.error("Output refresh failed", error));
+  }, [state.lastOutput, listOutputs, dispatch]);
+
+  const handleNewProject = useCallback(() => dispatch({ type: "SET_NEW_PROJECT_OPEN", payload: true }), [dispatch]);
+  const handleOpenProject = useCallback((project: Project) => dispatch({ type: "SET_ACTIVE_PROJECT", payload: project }), [dispatch]);
+  const handleBack = useCallback(() => dispatch({ type: "SET_ACTIVE_PROJECT", payload: null }), [dispatch]);
+  const handleSettings = useCallback(() => dispatch({ type: "SET_SETTINGS_OPEN", payload: true }), [dispatch]);
+  const handleCloseSettings = useCallback(() => dispatch({ type: "SET_SETTINGS_OPEN", payload: false }), [dispatch]);
+  const handleCloseNewProject = useCallback(() => dispatch({ type: "SET_NEW_PROJECT_OPEN", payload: false }), [dispatch]);
+  const handleQueryChange = useCallback((query: string) => dispatch({ type: "SET_QUERY", payload: query }), [dispatch]);
+  const handleLanguageChange = useCallback((lang: UiLanguage) => {
+    localStorage.setItem("llmvoice.ui-language", lang);
+    dispatch({ type: "SET_UI_LANGUAGE", payload: lang });
+  }, [dispatch]);
+
+  const handleCreateProject = useCallback(async (name: string) => {
+    try {
+      const project = await createProject(name);
+      dispatch({ type: "ADD_PROJECT", payload: project });
+      dispatch({ type: "SET_NEW_PROJECT_OPEN", payload: false });
+      dispatch({ type: "SET_ACTIVE_PROJECT", payload: project });
+      dispatch({ type: "SET_SCRIPT", payload: "" });
+      dispatch({ type: "SET_SAVED", payload: true });
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [createProject, dispatch]);
+
+  const handleAddVoice = useCallback(async () => {
+    const source = await open({
+      multiple: false,
+      filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"] }],
+    });
+    if (typeof source !== "string") return;
+    const base = source.split(/[\\/]/).pop()?.split(".")[0] ?? "voice";
+    const name = prompt(t.voiceName, base);
+    if (!name) return;
+    try {
+      const voice = await addVoice(name, source);
+      dispatch({ type: "ADD_VOICE", payload: voice });
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [addVoice, t, dispatch]);
+
+  const handleSaveProject = useCallback(async (): Promise<boolean> => {
+    if (!state.activeProject) return false;
+    const updated = {
+      ...state.activeProject,
+      voice: state.selectedVoice || null,
+      profile: state.profile,
+      language: state.language,
+      speed: state.speed,
+      output_format: state.outputFormat,
+    };
+    try {
+      await saveProject(updated, state.script);
+      dispatch({ type: "UPDATE_PROJECT", payload: updated });
+      dispatch({ type: "SET_SAVED", payload: true });
+      return true;
+    } catch (error) {
+      alert(String(error));
+      return false;
+    }
+  }, [state, saveProject, dispatch]);
+
+  const handleRenderProject = useCallback(async () => {
+    if (!state.activeProject || state.rendering) return;
+    try {
+      const didSave = await handleSaveProject();
+      if (!didSave) return;
+      if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+      setRenderLogs([]);
+      setRenderProgress({ phase: "starting", progress: 0 });
+      setConsoleCollapsed(false);
+      setRenderUiVisible(true);
+      dispatch({ type: "SET_RENDERING", payload: true });
+      const projectToRender = {
+        ...state.activeProject,
+        voice: state.selectedVoice || null,
+        profile: state.profile,
+        language: state.language,
+        speed: state.speed,
+        output_format: state.outputFormat,
+      };
+      const output = await renderProject(projectToRender);
+      dispatch({ type: "SET_LAST_OUTPUT", payload: output });
+      alert(t.renderedSuccess);
+    } catch (error) {
+      const message = String(error);
+      setRenderProgress({ phase: "failed", progress: 0 });
+      setRenderLogs((current) => [...current.slice(-99), `[${new Date().toLocaleTimeString()}] ${message}`]);
+      if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+      renderHideTimer.current = setTimeout(() => setRenderUiVisible(false), 3500);
+      alert(message);
+    } finally {
+      dispatch({ type: "SET_RENDERING", payload: false });
+    }
+  }, [state, handleSaveProject, renderProject, t, dispatch]);
+
+  const renderProgressLabel = renderProgress.phase === "rendering"
+    ? t.generating
+    : renderProgress.phase === "complete"
+      ? t.renderComplete
+      : renderProgress.phase === "failed"
+        ? t.renderFailed
+        : t.preparing;
+
+  const handleScriptChange = useCallback((script: string) => {
+    dispatch({ type: "SET_SCRIPT", payload: script });
+  }, [dispatch]);
+
+  const handleVoiceChange = useCallback((voice: string) => {
+    dispatch({ type: "SET_SELECTED_VOICE", payload: voice });
+  }, [dispatch]);
+
+  const handleProfileChange = useCallback((profile: string) => {
+    dispatch({ type: "SET_PROFILE", payload: profile });
+  }, [dispatch]);
+
+  const handleLanguageChange2 = useCallback((language: string) => {
+    dispatch({ type: "SET_LANGUAGE", payload: language });
+  }, [dispatch]);
+
+  const handleSpeedChange = useCallback((speed: number) => {
+    dispatch({ type: "SET_SPEED", payload: speed });
+  }, [dispatch]);
+
+  const handleOutputFormatChange = useCallback((format: string) => {
+    dispatch({ type: "SET_OUTPUT_FORMAT", payload: format });
+  }, [dispatch]);
+
+  const handleRename = useCallback(async (oldName: string, newName: string) => {
+    try {
+      const updated = await renameProject(oldName, newName);
+      dispatch({ type: "UPDATE_PROJECT", payload: updated });
+      if (state.activeProject?.name === oldName) {
+        dispatch({ type: "SET_ACTIVE_PROJECT", payload: updated });
+      }
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [renameProject, state.activeProject, dispatch]);
+
+  const handleDelete = useCallback(async (name: string) => {
+    if (!confirm(`${t.deleteProject} "${name}"?`)) return;
+    try {
+      await deleteProject(name);
+      dispatch({ type: "REMOVE_PROJECT", payload: name });
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [deleteProject, t, dispatch]);
+
+  const handleOutputPlay = useCallback((path: string) => {
+    dispatch({ type: "SET_CURRENT_AUDIO", payload: convertFileSrc(path) });
+    dispatch({ type: "SET_SHOW_PLAYER", payload: true });
+  }, [dispatch]);
+
+  const handleOutputReveal = useCallback((path: string) => {
+    void revealOutput(path);
+  }, [revealOutput]);
+
+  const handleOutputs = useCallback(() => {
+    dispatch({ type: "SET_SHOW_OUTPUTS", payload: !state.showOutputs });
+  }, [dispatch, state.showOutputs]);
+
+  useEffect(() => {
+    if (!state.activeProject) return;
+    dispatch({ type: "SET_SELECTED_VOICE", payload: state.activeProject.voice ?? state.voices[0]?.name ?? "" });
+    dispatch({ type: "SET_PROFILE", payload: state.activeProject.profile });
+    dispatch({ type: "SET_LANGUAGE", payload: state.activeProject.language });
+    dispatch({ type: "SET_SPEED", payload: state.activeProject.speed });
+    dispatch({ type: "SET_OUTPUT_FORMAT", payload: state.activeProject.output_format });
+    void readProjectScript(state.activeProject.name)
+      .then((script) => {
+        dispatch({ type: "SET_SCRIPT", payload: script });
+        dispatch({ type: "SET_SAVED", payload: true });
+      })
+      .catch((error) => alert(String(error)));
+  }, [state.activeProject, state.voices, readProjectScript, dispatch]);
+
+  const handleOpenFeedback = useCallback(() => dispatch({ type: "SET_SHOW_FEEDBACK", payload: true }), [dispatch]);
+
+  const handleFeedbackSubmit = useCallback((message: string) => {
+    if (!message.trim()) return;
+    const url = `https://github.com/yud3-stack/LLMVoice/issues/new?title=${encodeURIComponent("LLMVoice feedback")}&body=${encodeURIComponent(message.trim())}`;
+    globalThis.open(url, "_blank");
+  }, []);
+
+  return (
+    <div className={`launcher${renderUiVisible ? " render-ui-visible" : ""}`}>
+      {showSetup && <SetupWizard t={t} onReady={() => setShowSetup(false)} />}
+      <TopBar onMenu={handleNewProject} onFeedback={handleOpenFeedback} onOutputs={handleOutputs} t={t} />
+      {state.activeProject ? (
+        <Editor
+          project={state.activeProject}
+          script={state.script}
+          voices={state.voices}
+          selectedVoice={state.selectedVoice}
+          onVoiceChange={handleVoiceChange}
+          profile={state.profile}
+          onProfileChange={handleProfileChange}
+          language={state.language}
+          onLanguageChange={handleLanguageChange2}
+          speed={state.speed}
+          onSpeedChange={handleSpeedChange}
+          outputFormat={state.outputFormat}
+          onOutputFormatChange={handleOutputFormatChange}
+          saved={state.saved}
+          rendering={state.rendering}
+          onScriptChange={handleScriptChange}
+          onBack={handleBack}
+          onSave={handleSaveProject}
+          onRender={handleRenderProject}
+          t={t}
+        />
+      ) : (
+        <Launcher
+          query={state.query}
+          onQueryChange={handleQueryChange}
+          projects={state.projects}
+          onNew={handleNewProject}
+          onOpen={handleOpenProject}
+          onRename={handleRename}
+          onDelete={handleDelete}
+          onSettings={handleSettings}
+          t={t}
+        />
+      )}
+      {state.settingsOpen && (
+        <SettingsPanel
+          voices={state.voices}
+          language={state.uiLanguage}
+          onLanguage={handleLanguageChange}
+          onAdd={handleAddVoice}
+          onClose={handleCloseSettings}
+          t={t}
+        />
+      )}
+      {state.newProjectOpen && (
+        <ProjectModal
+          isOpen={state.newProjectOpen}
+          onClose={handleCloseNewProject}
+          onSubmit={handleCreateProject}
+          t={t}
+        />
+      )}
+      <div id="render-console" className={consoleCollapsed ? "collapsed" : ""} aria-live="polite">
+        <div className="render-console-head">
+          <AudioLines size={13} />
+          <strong>{t.renderActivity}</strong>
+          <span>{renderProgressLabel}</span>
+          <button id="render-console-close" aria-label={t.hideRenderActivity} onClick={() => setConsoleCollapsed(true)}>×</button>
+        </div>
+        <div className="render-console-lines" ref={consoleLines}>
+          {renderLogs.length === 0
+            ? <div className="render-console-empty">{t.waitingForRender}</div>
+            : renderLogs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}
+        </div>
+      </div>
+      <button id="render-console-toggle" className={consoleCollapsed ? "visible" : ""} aria-label={t.showRenderActivity} onClick={() => setConsoleCollapsed(false)}>
+        <AudioLines size={14} />
+      </button>
+      <div id="render-progress" role="status" aria-live="polite">
+        <div className="render-progress-top">
+          <span className="render-progress-label">{renderProgressLabel}</span>
+          <span className="render-progress-value">
+            {renderProgress.indeterminate ? t.inProgress : `${renderProgress.progress}%`}
+          </span>
+        </div>
+        <div className={`render-progress-track${state.rendering ? " active" : ""}${renderProgress.indeterminate ? " indeterminate" : ""}`} aria-hidden="true">
+          <i style={{ width: renderProgress.indeterminate ? "35%" : `${renderProgress.progress}%` }} />
+        </div>
+      </div>
+      <div id="outputs-popover" className={state.showOutputs ? "visible" : ""}>
+        <strong>{t.recentVoiceovers}</strong>
+        {state.outputs.slice(0, 8).map((item) => (
+          <div key={item.path} className="output-entry">
+            <span className="output-name" title={item.path}>{item.name}</span>
+            <span className="output-actions">
+              <button className="output-action folder-action" title={t.showFolder} onClick={() => handleOutputReveal(item.path)}>📁</button>
+              <button className="output-action play-action" title={t.playAudio} onClick={() => handleOutputPlay(item.path)}>▶</button>
+            </span>
+          </div>
+        ))}
+        {state.outputs.length === 0 && <span className="outputs-empty">{t.noRendered}</span>}
+      </div>
+      <div id="feedback-panel" className={state.showFeedback ? "visible" : ""}>
+        <form id="feedback-form" onSubmit={(e) => { e.preventDefault(); const msg = (e.target as HTMLFormElement).elements.namedItem("message") as HTMLTextAreaElement; handleFeedbackSubmit(msg.value); msg.value = ""; dispatch({ type: "SET_SHOW_FEEDBACK", payload: false }); }}>
+          <button type="button" className="feedback-close" onClick={() => dispatch({ type: "SET_SHOW_FEEDBACK", payload: false })}>×</button>
+          <span className="modal-kicker">{t.feedbackKicker}</span>
+          <h2>{t.feedbackTitle}</h2>
+          <p>{t.feedbackDescription}</p>
+          <textarea name="message" id="feedback-message" placeholder={t.feedbackPlaceholder} />
+          <button type="submit">{t.feedbackSubmit}</button>
+        </form>
+      </div>
+      <div id="studio-player" className={state.showPlayer ? "player-visible" : ""}>
+        <span className="player-kicker">{t.nowPlaying}</span>
+        <audio id="studio-audio" controls src={state.currentAudio} onEnded={() => dispatch({ type: "SET_SHOW_PLAYER", payload: false })} />
+        <button id="player-close" onClick={() => {
+          document.querySelector<HTMLAudioElement>("#studio-audio")?.pause();
+          dispatch({ type: "SET_SHOW_PLAYER", payload: false });
+        }}>×</button>
+      </div>
+    </div>
+  );
 }
 
-function TopBar({ window, onMenu, t }: { window: ReturnType<typeof getCurrentWindow>; onMenu: () => void; t: Translation }) { return <header className="launcher-bar"><button className="chrome-button" onClick={onMenu}><Menu size={17} /></button><div className="drag-zone" data-tauri-drag-region onMouseDown={() => void window.startDragging()} /><div className="instance-select"><span className="mini-logo"><AudioLines size={12} /></span><strong>LLMVoice</strong><span className="bar-context">{t.personalWorkspace}</span><ChevronDown size={13} /></div><div className="chrome-actions"><button className="chrome-button"><Bell size={16} /></button><button className="chrome-button"><MessageSquarePlus size={16} /></button><button className="chrome-button"><Download size={16} /></button><span className="window-divider" /><button className="window-control" onClick={() => void window.minimize()}>—</button><button className="window-control" onClick={() => void window.toggleMaximize()}>□</button><button className="window-control close" onClick={() => void window.close()}>×</button></div></header>; }
-
-function Launcher({ query, setQuery, projects, onNew, onOpen, onSettings, t }: { query: string; setQuery: (value: string) => void; projects: Project[]; onNew: () => void; onOpen: (project: Project) => void; onSettings: () => void; t: Translation }) { const visible = projects.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())); return <main className="launcher-content"><button className="login-button">{t.localWorkspace}</button><div className="hero-brand"><div className="hero-wave"><AudioLines size={29} /></div><h1>LLMVoice</h1><span>{t.localVoiceWorkspace}</span></div><div className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t.findProject} /><kbd>Ctrl K</kbd></div><div className="project-grid"><button className="project-card fresh" onClick={onNew}><div className="card-icon"><Plus size={27} strokeWidth={1.5} /></div><div className="card-copy"><strong>{t.newVoiceover}</strong><span>{t.freshNarration}</span></div></button>{visible.map((project) => <button className="project-card" key={project.name} onClick={() => onOpen(project)}><div className="card-icon"><FolderOpen size={22} strokeWidth={1.5} /></div><div className="card-menu"><MoreVertical size={17} /></div><div className="card-copy"><strong>{project.name}</strong><span>{t.localProject}</span></div></button>)}{visible.length === 0 && <div className="no-projects"><Mic2 size={18} />{t.noProjects}</div>}</div><div className="launcher-footer"><span><span className="online-dot" />{t.engineReady}</span><span>{t.turkishEnabled}</span><button onClick={onSettings}><Settings2 size={14} />{t.settings}</button><Laptop size={14} /></div></main>; }
-
-function SettingsPanel({ voices, language, onLanguage, onAdd, onClose, t }: { voices: Voice[]; language: UiLanguage; onLanguage: (value: UiLanguage) => void; onAdd: () => void; onClose: () => void; t: Translation }) { return <div id="settings-panel" className="visible" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><div className="settings-sheet"><button className="settings-close" onClick={onClose}>×</button><span className="modal-kicker">{t.preferences}</span><h2>{t.settings}</h2><div className="settings-tabs"><button className="active">{t.voiceLibrary}</button><button>{t.general}</button></div><div className="settings-section"><div><strong>{t.localVoices}</strong><span>{t.referenceDescription}</span></div><button className="add-voice-button" onClick={onAdd}>{t.addVoice}</button></div><div className="settings-voices">{voices.length ? voices.map((voice) => <div className="settings-voice" key={voice.name}><span className="settings-voice-icon">♪</span><span><strong>{voice.name}</strong><small>{t.localReference}</small></span><i>{t.ready}</i></div>) : <span className="outputs-empty">{t.noVoices}</span>}</div><div className="settings-language"><label htmlFor="language-select">{t.interfaceLanguage}</label><select id="language-select" value={language} onChange={(event) => onLanguage(event.target.value as UiLanguage)}><option value="tr">Türkçe</option><option value="en">English</option></select></div><div className="settings-note">{t.localOnly}</div></div></div>; }
-
-function Editor({ project, script, voices, selectedVoice, setSelectedVoice, profile, setProfile, language, setLanguage, speed, setSpeed, outputFormat, setOutputFormat, saved, setScript, onBack, onSave, onRender, t }: { project: Project; script: string; voices: Voice[]; selectedVoice: string; setSelectedVoice: (value: string) => void; profile: string; setProfile: (value: string) => void; language: string; setLanguage: (value: string) => void; speed: number; setSpeed: (value: number) => void; outputFormat: string; setOutputFormat: (value: string) => void; saved: boolean; setScript: (value: string) => void; onBack: () => void; onSave: () => void; onRender: () => void; t: Translation }) { const [voiceOpen, setVoiceOpen] = useState(false); const current = voices.find((voice) => voice.name === selectedVoice); return <main className="editor-workspace"><div className="editor-top"><button className="back-button" onClick={onBack}><ArrowLeft size={16} />{t.allProjects}</button><div className="editor-title"><FileText size={15} /><strong>{project.name}</strong><span>{saved ? t.saved : t.unsaved}</span></div><button className="save-button" onClick={onSave}><Save size={15} />{t.save}</button></div><div className="editor-layout"><section className="script-surface"><div className="surface-heading"><div><span className="modal-kicker">{t.script}</span><h2>{t.voiceoverScript}</h2></div><span className="script-meta">{script.length} {t.characters}</span></div><textarea autoFocus value={script} onChange={(event) => setScript(event.target.value)} placeholder={t.writeScript} spellCheck={false} /><div className="surface-foot"><span><FileText size={13} />{t.plainText}</span><span>{t.savedWithProject}</span></div></section><aside className="inspector"><div className="inspector-heading"><span className="modal-kicker">{t.setup}</span><h2>{t.voiceover}</h2></div><label>{t.voice}<div className="voice-picker"><button type="button" className="select-field voice-trigger" onClick={() => setVoiceOpen(!voiceOpen)}>{current?.name ?? t.chooseVoice}<ChevronDown size={15} /></button>{voiceOpen && <div className="voice-menu">{voices.length ? voices.map((voice) => <button type="button" className="voice-option" key={voice.name} onClick={() => { setSelectedVoice(voice.name); setVoiceOpen(false); }}><span className="option-icon">♪</span>{voice.name}</button>) : <div className="voice-empty">{t.noVoices}</div>}</div>}</div></label><div className="editor-controls"><label>{t.profile}<select value={profile} onChange={(e) => setProfile(e.target.value)}><option value="balanced">{t.balanced}</option><option value="natural">{t.natural}</option><option value="expressive">{t.expressive}</option></select></label><label>{t.language}<select value={language} onChange={(e) => setLanguage(e.target.value)}><option value="tr">Türkçe</option><option value="en">English</option></select></label><label>{t.speed}<input type="range" min="0.5" max="1.5" step="0.1" value={speed} onChange={(e) => setSpeed(Number(e.target.value))} /></label><label>{t.output}<select value={outputFormat} onChange={(e) => setOutputFormat(e.target.value)}><option value="mp3">MP3</option><option value="wav">WAV</option></select></label></div><button className="render-button" onClick={onRender}>{t.render}</button></aside></div></main>; }
-
-export default App;
+export default function App() {
+  return (
+    <AppProvider>
+      <ErrorBoundary>
+        <AppContent />
+      </ErrorBoundary>
+    </AppProvider>
+  );
+}

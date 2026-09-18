@@ -44,7 +44,15 @@ published separately from the Python package under the `desktop-v*` tag series.
 
 For Early Access, use the installer and desktop assets attached to the matching
 GitHub prerelease. The desktop studio requires the LLMVoice runtime installed by
-the Windows installer and does not support macOS or Linux yet.
+the Windows installer and does not support macOS or Linux yet. Studio verifies
+the runtime capability contract before voice management or rendering, so an old
+CLI cannot silently produce incompatible projects. Keep the installer runtime
+updated to the release required by the matching desktop prerelease.
+
+For upgrades from `0.1.7`, Studio provides a limited compatibility mode so the
+application can open and existing voices remain available. That mode supports
+MP3 rendering with the balanced profile; install the current runtime before
+using WAV output or another quality profile.
 
 ## User installation
 

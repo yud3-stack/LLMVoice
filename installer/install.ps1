@@ -195,7 +195,31 @@ function Get-ReleaseManifest {
     param([string]$RequestedVersion)
 
     if ($RequestedVersion -eq "latest") {
-        $uri = "https://github.com/$($script:Repository)/releases/latest/download/install-manifest.json"
+        # Desktop and Python releases use different tag families. GitHub's
+        # global /releases/latest can therefore resolve to a desktop release
+        # that does not contain the Python installer manifest.
+        $apiUri = "https://api.github.com/repos/$($script:Repository)/releases?per_page=30"
+        try {
+            $releases = Invoke-RestMethod -Uri $apiUri -Headers @{ "User-Agent" = "LLMVoice-Installer" } -TimeoutSec 120
+            $runtimeRelease = @($releases) |
+                Where-Object {
+                    $_.tag_name -match '^v[0-9]+\.[0-9]+\.[0-9]+$' -and
+                    $_.draft -eq $false -and
+                    @($_.assets | ForEach-Object { $_.name }) -contains "install-manifest.json"
+                } |
+                Sort-Object published_at -Descending |
+                Select-Object -First 1
+            if ($null -eq $runtimeRelease) {
+                Throw-InstallerError "No Python runtime release with install-manifest.json was found."
+            }
+            $uri = "https://github.com/$($script:Repository)/releases/download/$($runtimeRelease.tag_name)/install-manifest.json"
+        }
+        catch {
+            if ($_.Exception.Message -like "No Python runtime release*") {
+                throw
+            }
+            Throw-InstallerError "Could not find the latest Python runtime release: $($_.Exception.Message)"
+        }
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {

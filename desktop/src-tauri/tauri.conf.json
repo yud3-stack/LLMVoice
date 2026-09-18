@@ -18,7 +18,7 @@
         "minWidth": 760,
         "minHeight": 560,
         "resizable": true,
-        "decorations": false
+        "decorations": true
       }
     ],
     "security": {
@@ -34,6 +34,7 @@
   },
   "bundle": {
     "active": true,
+    "resources": { "../../installer/install.ps1": "installer/install.ps1" },
     "createUpdaterArtifacts": true,
     "targets": "nsis",
     "icon": ["icons/icon.svg"],

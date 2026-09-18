@@ -321,7 +321,8 @@ def test_installer_and_release_workflow_security_invariants() -> None:
     assert "Invoke-Expression" not in installer
     assert '"Machine"' not in installer
     assert "Get-FileHash" in installer
-    assert "releases/latest/download/install-manifest.json" in installer
+    assert "api.github.com/repos/$($script:Repository)/releases" in installer
+    assert 'install-manifest.json"' in installer
     assert "& llmvoice" not in installer
     assert 'Invoke-Native -FilePath $llmvoiceExe -Arguments @("doctor")' in installer
     assert "Runtime package version mismatch for $packageName" in installer
