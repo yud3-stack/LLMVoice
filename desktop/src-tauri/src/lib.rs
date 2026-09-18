@@ -417,13 +417,26 @@ fn model_is_installed(python: &Path) -> bool {
 #[tauri::command]
 fn check_environment(app: AppHandle) -> Result<EnvironmentStatus, String> {
     let root = data_root(&app)?;
-    let runtime = discover_python(&root)
-        .ok()
-        .and_then(|python| match runtime_mode(&python) {
+    let runtime = discover_python(&root).ok().and_then(|python| {
+        match runtime_mode(&python) {
             Ok(RuntimeMode::Contract) => Some((python, true)),
             Ok(RuntimeMode::Legacy017) => Some((python, false)),
-            Err(_) => None,
-        });
+            Err(_) => {
+                // The installer has already validated the 0.1.8 contract. A
+                // packaged Studio can briefly fail the capability probe when
+                // Windows has just switched the active runtime. Keep the
+                // installed runtime usable and let render_project perform
+                // the strict contract check before starting a job.
+                let version = std::process::Command::new(&python)
+                    .args(["-m", "llmvoice", "--version"])
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .and_then(|output| parse_runtime_version(&output.stdout));
+                (version.as_deref() == Some("0.1.8")).then_some((python, true))
+            }
+        }
+    });
     let runtime_ready = runtime.as_ref().map(|(_, ready)| *ready).unwrap_or(false);
     let runtime_version = runtime.as_ref().and_then(|(python, _)| {
         std::process::Command::new(python)
