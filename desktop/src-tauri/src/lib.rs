@@ -201,8 +201,18 @@ fn command_error(output: &std::process::Output, fallback: &str) -> String {
     }
 }
 
+fn hidden_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command
+}
+
 fn runtime_mode(python: &Path) -> Result<RuntimeMode, String> {
-    let output = std::process::Command::new(python)
+    let output = hidden_command(python)
         .args(["-m", "llmvoice", "capabilities", "--json"])
         .output()
         .map_err(|error| format!("Could not inspect the LLMVoice runtime: {error}"))?;
@@ -212,7 +222,7 @@ fn runtime_mode(python: &Path) -> Result<RuntimeMode, String> {
             "The runtime does not expose the desktop capability contract.",
         );
         if capability_error.contains("No such command 'capabilities'") {
-            let version_output = std::process::Command::new(python)
+            let version_output = hidden_command(python)
                 .args(["-m", "llmvoice", "--version"])
                 .output()
                 .map_err(|error| format!("Could not inspect the LLMVoice runtime: {error}"))?;
@@ -396,7 +406,7 @@ fn data_root(app: &AppHandle) -> Result<std::path::PathBuf, String> {
 }
 
 fn command_exists(command: &str) -> bool {
-    std::process::Command::new("where.exe")
+    hidden_command("where.exe")
         .arg(command)
         .output()
         .map(|output| output.status.success())
@@ -404,7 +414,7 @@ fn command_exists(command: &str) -> bool {
 }
 
 fn model_is_installed(python: &Path) -> bool {
-    std::process::Command::new(python)
+    hidden_command(python)
         .args(["-m", "llmvoice", "model", "status", "--json"])
         .output()
         .ok()
@@ -427,7 +437,7 @@ fn check_environment(app: AppHandle) -> Result<EnvironmentStatus, String> {
                 // Windows has just switched the active runtime. Keep the
                 // installed runtime usable and let render_project perform
                 // the strict contract check before starting a job.
-                let version = std::process::Command::new(&python)
+                let version = hidden_command(&python)
                     .args(["-m", "llmvoice", "--version"])
                     .output()
                     .ok()
@@ -439,7 +449,7 @@ fn check_environment(app: AppHandle) -> Result<EnvironmentStatus, String> {
     });
     let runtime_ready = runtime.as_ref().map(|(_, ready)| *ready).unwrap_or(false);
     let runtime_version = runtime.as_ref().and_then(|(python, _)| {
-        std::process::Command::new(python)
+        hidden_command(python)
             .args(["-m", "llmvoice", "--version"])
             .output()
             .ok()
@@ -478,7 +488,7 @@ async fn install_runtime(app: AppHandle) -> Result<(), String> {
             return Err("Kurulum dosyası uygulama paketinde bulunamadı.".into());
         }
         let _ = app.emit("setup-log", "LLMVoice runtime kurulumu başlatılıyor...");
-        let mut child = std::process::Command::new("powershell.exe")
+        let mut child = hidden_command("powershell.exe")
             .args([
                 "-NoProfile",
                 "-ExecutionPolicy",
@@ -537,7 +547,7 @@ async fn download_model(app: AppHandle) -> Result<(), String> {
         let root = data_root(&app)?;
         let python = discover_python(&root)?;
         let _ = app.emit("setup-log", "XTTS modeli indiriliyor; bu işlem birkaç dakika sürebilir...");
-        let output = std::process::Command::new(python)
+        let output = hidden_command(python)
             .args(["-m", "llmvoice", "model", "download", "--json"])
             .output()
             .map_err(|error| format!("Model kurulumu başlatılamadı: {error}"))?;
@@ -720,7 +730,7 @@ fn list_voices(app: AppHandle) -> Result<Vec<Voice>, String> {
     if matches!(runtime_mode(&python)?, RuntimeMode::Legacy017) {
         return list_legacy_voices(&root.join("voices"));
     }
-    let output = std::process::Command::new(&python)
+    let output = hidden_command(&python)
         .args(["-m", "llmvoice", "voice", "list", "--json"])
         .output()
         .map_err(|error| format!("Could not list stored voices: {error}"))?;
@@ -789,7 +799,7 @@ fn add_voice(app: AppHandle, name: String, source: String) -> Result<Voice, Stri
     }
     let root = data_root(&app)?;
     let python = discover_python(&root)?;
-    let result = std::process::Command::new(python)
+    let result = hidden_command(python)
         .args(["-m", "llmvoice", "voice", "add", clean_name])
         .arg(&source)
         .output()
@@ -877,7 +887,7 @@ fn render_project_sync(app: AppHandle, project: Project) -> Result<String, Strin
                 .into(),
         );
     }
-    let mut command = std::process::Command::new(python);
+    let mut command = hidden_command(python);
     command
         .args(["-m", "llmvoice", "start"])
         .arg(&script)
@@ -1003,7 +1013,7 @@ fn approved_output_path(app: &AppHandle, path: &str) -> Result<PathBuf, String> 
 fn reveal_output(app: AppHandle, path: String) -> Result<(), String> {
     let output = approved_output_path(&app, &path)?;
     let arguments = explorer_select_arguments(&output);
-    std::process::Command::new("explorer.exe")
+    hidden_command("explorer.exe")
         .args(arguments)
         .spawn()
         .map(|_| ())
@@ -1017,7 +1027,7 @@ fn explorer_select_arguments(path: &Path) -> [OsString; 2] {
 #[tauri::command]
 fn open_output(app: AppHandle, path: String) -> Result<(), String> {
     let output = approved_output_path(&app, &path)?;
-    std::process::Command::new("explorer")
+    hidden_command("explorer")
         .arg(output)
         .spawn()
         .map(|_| ())
