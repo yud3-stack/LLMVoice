@@ -432,7 +432,7 @@ fn check_environment(app: AppHandle) -> Result<EnvironmentStatus, String> {
             Ok(RuntimeMode::Contract) => Some((python, true)),
             Ok(RuntimeMode::Legacy017) => Some((python, false)),
             Err(_) => {
-                // The installer has already validated the 0.1.9 contract. A
+                // The installer has already validated the 0.1.10 contract. A
                 // packaged Studio can briefly fail the capability probe when
                 // Windows has just switched the active runtime. Keep the
                 // installed runtime usable and let render_project perform
@@ -443,7 +443,7 @@ fn check_environment(app: AppHandle) -> Result<EnvironmentStatus, String> {
                     .ok()
                     .filter(|output| output.status.success())
                     .and_then(|output| parse_runtime_version(&output.stdout));
-                (version.as_deref() == Some("0.1.9")).then_some((python, true))
+                (version.as_deref() == Some("0.1.10")).then_some((python, true))
             }
         }
     });
@@ -499,7 +499,7 @@ async fn install_runtime(app: AppHandle) -> Result<(), String> {
             // The repository has separate desktop and Python release streams.
             // Do not let GitHub's global "latest" point the runtime installer at
             // the desktop prerelease series.
-            .args(["-Runtime", "auto", "-Version", "0.1.9"])
+            .args(["-Runtime", "auto", "-Version", "0.1.10"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -1120,7 +1120,7 @@ mod tests {
     fn accepts_complete_desktop_runtime_contract() {
         let capabilities = RuntimeCapabilities {
             schema_version: 1,
-            version: "0.1.9".into(),
+            version: "0.1.10".into(),
             output_formats: vec!["mp3".into(), "wav".into()],
             quality_profiles: vec![
                 "natural".into(),
