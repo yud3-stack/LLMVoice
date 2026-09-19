@@ -471,10 +471,6 @@ fn check_environment(app: AppHandle) -> Result<EnvironmentStatus, String> {
 #[tauri::command]
 async fn install_runtime(app: AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let root = data_root(&app)?;
-        if discover_python(&root).is_err() {
-            return Err("Python bulunamadı. Önce desteklenen 64-bit Python sürümünü kurun.".into());
-        }
         if !command_exists("ffmpeg.exe") || !command_exists("ffprobe.exe") {
             return Err("FFmpeg ve FFprobe bulunamadı. Önce FFmpeg Shared kurulumunu tamamlayın.".into());
         }
