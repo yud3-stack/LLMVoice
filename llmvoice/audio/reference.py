@@ -9,21 +9,27 @@ from llmvoice.audio.metadata import probe_audio
 from llmvoice.core.exceptions import AudioToolError
 
 ENDPOINT_TRIM_FILTER = (
-    "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02,"
+    "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02,"
     "areverse,"
-    "silenceremove=start_periods=1:start_threshold=-45dB:start_silence=0.02,"
+    "silenceremove=start_periods=1:start_duration=0.02:start_threshold=-45dB:start_silence=0.02,"
     "areverse,atrim=duration=15"
 )
 REFERENCE_LOUDNORM = "loudnorm=I=-20:TP=-1.5:LRA=11"
-REFERENCE_PROCESSING_VERSION = "3"
+REFERENCE_PROCESSING_VERSION = "4"
 REFERENCE_MAX_SECONDS = 15.0
 
 
 def _cache_key(source: Path, denoise_model: Path | None = None) -> str:
     stat = source.stat()
+    denoise_identity = ""
+    if denoise_model is not None:
+        model_stat = denoise_model.stat()
+        denoise_identity = (
+            f"{denoise_model.resolve()}:{model_stat.st_size}:{model_stat.st_mtime_ns}"
+        )
     value = (
         f"{source.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:"
-        f"{REFERENCE_PROCESSING_VERSION}:{denoise_model.resolve() if denoise_model else ''}"
+        f"{REFERENCE_PROCESSING_VERSION}:{denoise_identity}"
     ).encode("utf-8")
     return hashlib.sha256(value).hexdigest()[:24]
 
@@ -66,7 +72,7 @@ def prepare_reference(
     try:
         run_tool(
             [
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(source),
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-threads", "1", "-y", "-i", str(source),
                 "-map", "0:a:0", "-ac", "1", "-ar", "24000",
                  "-af", filter_chain,
                 "-c:a", "pcm_s16le", str(temporary),

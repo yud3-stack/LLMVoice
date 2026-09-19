@@ -16,16 +16,15 @@ def test_creates_default_config(tmp_path) -> None:
     assert store.paths.config_file.exists()
 
 
-def test_loads_config_and_ignores_future_fields(tmp_path) -> None:
+def test_rejects_unknown_config_fields(tmp_path) -> None:
     paths = AppPaths(tmp_path / "data")
     paths.ensure()
     paths.config_file.write_text(
         json.dumps({"default_voice": "friday", "device": "cpu", "future": True}),
         encoding="utf-8",
     )
-    config = ConfigStore(paths).load()
-    assert config.default_voice == "friday"
-    assert config.device == "cpu"
+    with pytest.raises(ConfigurationError, match="Unknown config field"):
+        ConfigStore(paths).load()
 
 
 def test_rejects_invalid_config(tmp_path) -> None:
@@ -39,6 +38,13 @@ def test_rejects_invalid_config(tmp_path) -> None:
 def test_rejects_invalid_speed() -> None:
     with pytest.raises(ConfigurationError, match="default_speed"):
         AppConfig(default_speed=5.0).validate()
+
+
+def test_rejects_invalid_engine_and_language() -> None:
+    with pytest.raises(ConfigurationError, match="engine"):
+        AppConfig(engine="unknown").validate()
+    with pytest.raises(ConfigurationError, match="default_language"):
+        AppConfig(default_language="xx").validate()
 
 
 def test_rejects_wrong_config_type(tmp_path) -> None:
@@ -55,5 +61,7 @@ def test_config_store_get_set_and_reject_unknown(tmp_path) -> None:
     assert updated.chunk_pause_ms == 120
     assert store.get("chunk_pause_ms") == 120
     assert store.set("quality_profile", "natural").quality_profile == "natural"
+    assert store.set("quality_profile", "expressive").quality_profile == "expressive"
+    assert store.set("output_format", "wav").output_format == "wav"
     with pytest.raises(ConfigurationError, match="Unknown config field"):
         store.set("missing", "1")

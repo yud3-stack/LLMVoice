@@ -53,6 +53,10 @@ from llmvoice.voices.manager import RECOMMENDED_MAX_SECONDS, VoiceManager
 console = Console()
 error_console = Console(stderr=True)
 
+CLI_CONTRACT_SCHEMA = 1
+CLI_EVENT_PROTOCOL = "llmvoice.ndjson.v1"
+SUPPORTED_OUTPUT_FORMATS = ("mp3", "wav")
+
 
 def _voice_to_dict(voice) -> dict[str, object]:
     """Return stable, path-safe data for automation clients."""
@@ -76,6 +80,7 @@ def _print_json(value: object, *, indent: int | None = None) -> None:
         soft_wrap=True,
         no_wrap=True,
     )
+
 
 HELP_TEXT = """Local long-form voice cloning CLI.
 
@@ -104,6 +109,27 @@ app.add_typer(model_app, name="model")
 app.add_typer(audio_app, name="audio")
 
 
+@app.command("capabilities")
+def capabilities(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Show the stable CLI contract exposed to desktop clients."""
+    payload = {
+        "schema_version": CLI_CONTRACT_SCHEMA,
+        "version": __version__,
+        "output_formats": list(SUPPORTED_OUTPUT_FORMATS),
+        "quality_profiles": sorted(VALID_QUALITY_PROFILES),
+        "event_protocol": CLI_EVENT_PROTOCOL,
+    }
+    if json_output:
+        _print_json(payload)
+        return
+    console.print("\n[bold]LLMVoice capabilities[/bold]\n")
+    console.print(details_table([(key, str(value)) for key, value in payload.items()]))
+
+
 def _version_callback(value: bool) -> None:
     if value:
         console.print(f"LLMVoice {__version__}")
@@ -124,12 +150,14 @@ def _run_safely(
     action: Callable[[], None],
     debug: bool = False,
     json_output: bool = False,
+    json_events: bool = False,
 ) -> None:
     try:
         action()
     except KeyboardInterrupt:
         if json_output:
-            _print_json({"ok": False, "error": "cancelled", "message": "Generation cancelled."})
+            payload = {"ok": False, "error": "cancelled", "message": "Generation cancelled."}
+            _print_json({"event": "error", **payload} if json_events else payload)
             raise typer.Exit(code=130) from None
         error_console.print(
             "\nGeneration cancelled.\n\nTemporary files were cleaned up.",
@@ -138,13 +166,12 @@ def _run_safely(
         raise typer.Exit(code=130) from None
     except LLMVoiceError as exc:
         if json_output:
-            _print_json(
-                {
-                    "ok": False,
-                    "error": type(exc).__name__,
-                    "message": str(exc),
-                }
-            )
+            payload = {
+                "ok": False,
+                "error": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_json({"event": "error", **payload} if json_events else payload)
             raise typer.Exit(code=1) from None
         if debug:
             error_console.print_exception(show_locals=False)
@@ -153,13 +180,12 @@ def _run_safely(
         raise typer.Exit(code=1) from None
     except Exception as exc:
         if json_output:
-            _print_json(
-                {
-                    "ok": False,
-                    "error": type(exc).__name__,
-                    "message": str(exc),
-                }
-            )
+            payload = {
+                "ok": False,
+                "error": type(exc).__name__,
+                "message": str(exc),
+            }
+            _print_json({"event": "error", **payload} if json_events else payload)
             raise typer.Exit(code=1) from None
         if debug:
             error_console.print_exception(show_locals=False)
@@ -249,7 +275,7 @@ def model_download(
 def start(
     input_file: Annotated[Path, typer.Argument(help="UTF-8 .txt transcript.")],
     output: Annotated[
-        Path | None, typer.Option("--output", "-o", help="Destination .mp3 path.")
+        Path | None, typer.Option("--output", "-o", help="Destination .mp3 or .wav path.")
     ] = None,
     voice: Annotated[
         str | None, typer.Option("--voice", help="Stored voice name or audio file path.")
@@ -272,6 +298,13 @@ def start(
     json_output: Annotated[
         bool, typer.Option("--json", help="Print one machine-readable JSON result.")
     ] = False,
+    json_events: Annotated[
+        bool,
+        typer.Option(
+            "--json-events",
+            help="Stream newline-delimited JSON events for desktop clients.",
+        ),
+    ] = False,
     resume: Annotated[
         bool,
         typer.Option(
@@ -290,7 +323,7 @@ def start(
         str | None,
         typer.Option(
             "--quality",
-            help="XTTS quality profile: natural, balanced, or stable.",
+            help="XTTS quality profile: natural, balanced, stable, or expressive.",
         ),
     ] = None,
     strict_reference_quality: Annotated[
@@ -301,9 +334,17 @@ def start(
         ),
     ] = False,
 ) -> None:
-    """Convert a transcript into a cloned-voice MP3."""
+    """Convert a transcript into a cloned-voice MP3 or WAV."""
+
+    machine_output = json_output or json_events
+
+    def emit_event(event: str, **payload: object) -> None:
+        if json_events:
+            _print_json({"event": event, **payload})
 
     def action() -> None:
+        if json_output and json_events:
+            raise LLMVoiceError("Use either --json or --json-events, not both.")
         logging.basicConfig(
             level=logging.DEBUG if debug else logging.WARNING,
             format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -342,9 +383,10 @@ def start(
                 )
         voice_path = voice_paths[0]
 
-        destination = output_path_for(input_path, output)
-        if destination.suffix.casefold() != ".mp3":
-            raise LLMVoiceError("Output path must end with .mp3.")
+        destination = output_path_for(input_path, output, config.output_format)
+        if destination.suffix.casefold() not in {".mp3", ".wav"}:
+            raise LLMVoiceError("Output path must end with .mp3 or .wav.")
+        request_output_format = destination.suffix.casefold().lstrip(".").upper()
         if not dry_run:
             ensure_output_available(destination, force)
 
@@ -352,7 +394,7 @@ def start(
         selected_quality = quality or config.quality_profile
         if selected_quality not in VALID_QUALITY_PROFILES:
             raise LLMVoiceError(
-                "Quality profile must be one of: natural, balanced, stable."
+                "Quality profile must be one of: natural, balanced, stable, expressive."
             )
         selected_denoise_model = (
             denoise_model.expanduser().resolve() if denoise_model is not None else None
@@ -363,7 +405,7 @@ def start(
         estimated_seconds = estimate_speech_seconds(plan.text)
 
         engine_name = engine_display_name(config.engine)
-        if not json_output:
+        if not machine_output:
             render_start_summary(
                 console,
                 version=__version__,
@@ -380,15 +422,14 @@ def start(
                 estimated_seconds=estimated_seconds,
                 dry_run=dry_run,
             )
-        if device.kind == "cpu" and config.device == "auto" and not json_output:
+        if device.kind == "cpu" and config.device == "auto" and not machine_output:
             console.print(
                 "[yellow]Warning:[/yellow] CUDA was not detected. "
                 "Long-form generation may be significantly slower.\n"
             )
         if dry_run:
-            if json_output:
-                _print_json(
-                    {
+            if machine_output:
+                payload = {
                         "ok": True,
                         "dry_run": True,
                         "input": str(input_path),
@@ -407,18 +448,21 @@ def start(
                         "chunks": len(plan.chunks),
                         "estimated_seconds": estimated_seconds,
                     }
-                )
+                if json_events:
+                    emit_event("result", **payload)
+                else:
+                    _print_json(payload)
             else:
                 console.print("No audio was generated.")
             return
 
-        if resume and not json_output:
+        if resume and not machine_output:
             console.print("Resume mode enabled; completed chunks will be reused if available.\n")
 
         require_ffmpeg()
         engine = create_engine(config.engine, device.kind, paths)
         check_synthesis_disk_space(paths.cache_dir, destination, estimated_seconds)
-        if not getattr(engine, "is_model_installed", True) and not json_output:
+        if not getattr(engine, "is_model_installed", True) and not machine_output:
             console.print(
                 "XTTS-v2 model is not installed locally.\n"
                 "The model may be downloaded during this run.\n"
@@ -445,6 +489,9 @@ def start(
 
         def stage(name: str) -> None:
             nonlocal active_status
+            if json_events:
+                emit_event("stage", name=name)
+                return
             if json_output:
                 return
             ready = f"[green]{status_symbol(console, 'ok')}[/green]"
@@ -465,13 +512,21 @@ def start(
                 "model_ready": f"{ready} Model ready",
                 "merging": "Merging audio...",
                 "merge_done": f"{ready} Done",
-                "encoding": "Encoding MP3...",
+                "encoding": f"Encoding {request_output_format}...",
                 "encoding_done": f"{ready} Done",
             }
             console.print(labels[name])
 
         def on_progress(current: int, total: int) -> None:
             nonlocal task_id
+            if json_events:
+                emit_event(
+                    "progress",
+                    current=current,
+                    total=total,
+                    percent=round((current / total) * 100) if total else 0,
+                )
+                return
             if json_output:
                 return
             if task_id is None:
@@ -504,9 +559,8 @@ def start(
             if task_id is not None:
                 progress.stop()
         metadata = probe_audio(destination)
-        if json_output:
-            _print_json(
-                {
+        if machine_output:
+            payload = {
                     "ok": True,
                     "dry_run": False,
                     "input": str(input_path),
@@ -527,11 +581,19 @@ def start(
                     "duration_seconds": metadata.duration_seconds,
                     "size_bytes": destination.stat().st_size,
                 }
-            )
+            if json_events:
+                emit_event("result", **payload)
+            else:
+                _print_json(payload)
         else:
             render_created(console, destination, metadata)
 
-    _run_safely(action, debug=debug, json_output=json_output)
+    _run_safely(
+        action,
+        debug=debug,
+        json_output=machine_output,
+        json_events=json_events,
+    )
 
 
 @app.command()
@@ -560,6 +622,7 @@ def compare(
                 dry_run=False,
                 debug=debug,
                 json_output=False,
+                json_events=False,
                 resume=False,
                 denoise_model=None,
                 quality=profile,
@@ -609,7 +672,7 @@ def voice_list(
         else:
             render_voice_list(console, voices)
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @voice_app.command("info")
@@ -626,7 +689,7 @@ def voice_info(
         else:
             render_voice_info(console, voice)
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @voice_app.command("inspect")
@@ -767,6 +830,7 @@ def voice_record(
     def action() -> None:
         paths = AppPaths.discover()
         paths.ensure()
+        VoiceManager.validate_name(name)
         temporary = paths.cache_dir / "recordings" / f"{name}.wav"
         console.print(
             f"Recording {duration:.1f} seconds from {device or 'the default microphone'}..."
@@ -832,7 +896,7 @@ def config_show(
             console.print(json.dumps(payload, indent=2, ensure_ascii=False))
             console.print(f"\nConfig: {paths.config_file}")
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @config_app.command("get")
@@ -849,7 +913,7 @@ def config_get(
         else:
             console.print("null" if value is None else str(value))
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @config_app.command("set")
@@ -871,7 +935,7 @@ def config_set(
         else:
             console.print(f"{field} = {current}")
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
 
 
 @app.command()
@@ -905,7 +969,7 @@ def doctor(
                 console.print(f"  [dim]{check.hint}[/dim]")
         console.print("\n[green]System ready.[/green]" if ready else "\nSystem needs attention.")
 
-    _run_safely(action)
+    _run_safely(action, json_output=json_output)
     if needs_attention:
         raise typer.Exit(code=1)
 

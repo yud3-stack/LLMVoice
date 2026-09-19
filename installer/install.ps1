@@ -195,7 +195,31 @@ function Get-ReleaseManifest {
     param([string]$RequestedVersion)
 
     if ($RequestedVersion -eq "latest") {
-        $uri = "https://github.com/$($script:Repository)/releases/latest/download/install-manifest.json"
+        # Desktop and Python releases use different tag families. GitHub's
+        # global /releases/latest can therefore resolve to a desktop release
+        # that does not contain the Python installer manifest.
+        $apiUri = "https://api.github.com/repos/$($script:Repository)/releases?per_page=30"
+        try {
+            $releases = Invoke-RestMethod -Uri $apiUri -Headers @{ "User-Agent" = "LLMVoice-Installer" } -TimeoutSec 120
+            $runtimeRelease = @($releases) |
+                Where-Object {
+                    $_.tag_name -match '^v[0-9]+\.[0-9]+\.[0-9]+$' -and
+                    $_.draft -eq $false -and
+                    @($_.assets | ForEach-Object { $_.name }) -contains "install-manifest.json"
+                } |
+                Sort-Object published_at -Descending |
+                Select-Object -First 1
+            if ($null -eq $runtimeRelease) {
+                Throw-InstallerError "No Python runtime release with install-manifest.json was found."
+            }
+            $uri = "https://github.com/$($script:Repository)/releases/download/$($runtimeRelease.tag_name)/install-manifest.json"
+        }
+        catch {
+            if ($_.Exception.Message -like "No Python runtime release*") {
+                throw
+            }
+            Throw-InstallerError "Could not find the latest Python runtime release: $($_.Exception.Message)"
+        }
     }
     else {
         if ($RequestedVersion -notmatch "^[0-9]+\.[0-9]+\.[0-9]+(?:[A-Za-z0-9.-]+)?$") {
@@ -245,6 +269,10 @@ function Assert-Manifest {
     }
     if ([string]$Manifest.wheel.sha256 -notmatch "^[A-Fa-f0-9]{64}$") {
         Throw-InstallerError "Manifest wheel checksum is invalid."
+    }
+    $wheelSize = 0L
+    if (-not [long]::TryParse([string]$Manifest.wheel.size, [ref]$wheelSize) -or $wheelSize -le 0) {
+        Throw-InstallerError "Manifest wheel size is invalid."
     }
     if ([string]$Manifest.python.architecture -ne "x64") {
         Throw-InstallerError "This installer supports x64 Python runtimes only."
@@ -368,6 +396,17 @@ function Assert-Manifest {
         if ([string]$dependency -notmatch "^[A-Za-z0-9_.+-]+==[A-Za-z0-9_.+-]+$") {
             Throw-InstallerError "Manifest contains an invalid application dependency."
         }
+    }
+    $allowedApplicationDependencies = @("coqui-tts", "transformers")
+    $dependencyNames = @(
+        $applicationDependencies | ForEach-Object {
+            ([string]$_ -split "==", 2)[0].ToLowerInvariant()
+        }
+    )
+    if ($dependencyNames.Count -ne $allowedApplicationDependencies.Count -or
+        @($dependencyNames | Where-Object { $allowedApplicationDependencies -notcontains $_ }).Count -ne 0 -or
+        @($allowedApplicationDependencies | Where-Object { $dependencyNames -notcontains $_ }).Count -ne 0) {
+        Throw-InstallerError "Manifest contains an unexpected application dependency."
     }
 }
 
@@ -1390,6 +1429,10 @@ try {
     Write-Section "Downloading package"
     Invoke-SecureDownload -Uri $wheelUri -Destination $wheelPath
     Write-Ok "Downloaded"
+
+    if ((Get-Item -LiteralPath $wheelPath).Length -ne [long]$manifest.wheel.size) {
+        Throw-InstallerError "Downloaded package size does not match the release manifest."
+    }
 
     Write-Host "Verifying SHA256..."
     $actualHash = (Get-FileHash -LiteralPath $wheelPath -Algorithm SHA256).Hash.ToLowerInvariant()

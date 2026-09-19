@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import shutil
+import stat
 import tarfile
 import tomllib
 import zipfile
@@ -300,8 +301,21 @@ def find_release_artifacts(
 
 
 def _validate_member_names(names: Sequence[str]) -> None:
+    normalized_names: set[str] = set()
     for raw_name in names:
         path = PurePosixPath(raw_name.replace("\\", "/"))
+        if (
+            not raw_name
+            or path.is_absolute()
+            or raw_name.replace("\\", "/").startswith("/")
+            or re.match(r"^[A-Za-z]:/", raw_name.replace("\\", "/"))
+            or ".." in path.parts
+        ):
+            raise ReleaseError(f"Unsafe path in release artifact: {raw_name}")
+        normalized = path.as_posix().casefold().rstrip("/")
+        if normalized in normalized_names:
+            raise ReleaseError(f"Duplicate path in release artifact: {raw_name}")
+        normalized_names.add(normalized)
         lowered_parts = {part.casefold() for part in path.parts}
         filename = path.name.casefold()
         if lowered_parts & FORBIDDEN_PARTS:
@@ -315,6 +329,10 @@ def validate_wheel(path: Path, config: ProjectReleaseConfig) -> None:
     if not path.is_file():
         raise ReleaseError(f"Wheel does not exist: {path}")
     with zipfile.ZipFile(path) as archive:
+        for member in archive.infolist():
+            mode = (member.external_attr >> 16) & 0o170000
+            if stat.S_ISLNK(mode):
+                raise ReleaseError(f"Symlink is not allowed in release artifact: {member.filename}")
         names = archive.namelist()
         _validate_member_names(names)
         metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
@@ -323,6 +341,11 @@ def validate_wheel(path: Path, config: ProjectReleaseConfig) -> None:
         metadata = Parser().parsestr(
             archive.read(metadata_names[0]).decode("utf-8", errors="strict")
         )
+        metadata_name = re.sub(r"[-_.]+", "-", (metadata.get("Name") or "")).lower()
+        if metadata_name != config.normalized_name:
+            raise ReleaseError(
+                f"Wheel package name {metadata.get('Name')} does not match {config.name}."
+            )
         if metadata.get("Version") != config.version:
             raise ReleaseError(
                 f"Wheel version {metadata.get('Version')} does not match {config.version}."
@@ -340,13 +363,18 @@ def validate_sdist(path: Path, config: ProjectReleaseConfig) -> None:
     if not path.is_file():
         raise ReleaseError(f"Source distribution does not exist: {path}")
     with tarfile.open(path, "r:gz") as archive:
-        names = archive.getnames()
+        members = archive.getmembers()
+        if any(member.issym() or member.islnk() or member.isdev() for member in members):
+            raise ReleaseError("Links and device files are not allowed in release artifacts.")
+        names = [member.name for member in members]
     _validate_member_names(names)
     required = ("README.md", "LICENSE", "THIRD_PARTY_LICENSES.md", "pyproject.toml")
     for filename in required:
         if not any(name.endswith(f"/{filename}") for name in names):
             raise ReleaseError(f"Source distribution is missing {filename}.")
     expected_root = f"{config.normalized_name}-{config.version}/"
+    if any(not name.startswith(expected_root) for name in names):
+        raise ReleaseError("Source distribution contains files outside its expected root.")
     if not any(name.startswith(expected_root) for name in names):
         raise ReleaseError("Source distribution root does not match package version.")
     if f"{expected_root}llmvoice/voices/manager.py" not in names:

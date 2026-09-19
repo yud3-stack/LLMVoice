@@ -32,3 +32,10 @@ def test_turkish_speech_normalization_expands_measurements_and_currency() -> Non
     assert normalize_speech_text(source, "tr") == (
         "beş kilometre yol, iki gigabayt veri ve yüz yirmi beş lira ödeme."
     )
+
+
+def test_turkish_speech_normalization_expands_zero_forms() -> None:
+    source = "0, %0 ve 0,5"
+    assert normalize_speech_text(source, "tr") == (
+        "sıfır, yüzde sıfır ve sıfır virgül beş"
+    )

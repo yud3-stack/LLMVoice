@@ -26,6 +26,10 @@ class OutputExistsError(LLMVoiceError):
     """The requested output would overwrite an existing file."""
 
 
+class JobBusyError(LLMVoiceError):
+    """The same synthesis job is already running."""
+
+
 class DiskSpaceError(LLMVoiceError):
     """There is not enough free disk space for a synthesis job."""
 

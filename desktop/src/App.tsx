@@ -1,26 +1,425 @@
-import { useEffect, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { LogicalSize } from "@tauri-apps/api/dpi";
-import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, AudioLines, Bell, ChevronDown, Download, FileText, FolderOpen, Laptop, Menu, MessageSquarePlus, Mic2, MoreVertical, Plus, Save, Search, Settings2, SlidersHorizontal } from "lucide-react";
+import { useEffect, useCallback, useRef, useState } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { AudioLines } from "lucide-react";
 
-type Project = { name: string; created_at: string; updated_at: string; voice?: string | null; language: string; profile: string; speed: number; output_format: string };
-type Voice = { name: string };
+import { AppProvider, useApp } from "./context/AppContext";
+import { useProjects, useVoices, useOutputs, useUpdater, useWindowSize, useRenderProgress, useRenderLog } from "./hooks/useTauriCommands";
+import { TopBar } from "./components/TopBar";
+import { Launcher } from "./components/Launcher";
+import { Editor } from "./components/Editor";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { ProjectModal } from "./components/ProjectModal";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { SetupWizard } from "./components/SetupWizard";
+import { getUiLanguage, translations, type UiLanguage } from "./i18n";
+import type { Project, RenderProgressEvent } from "./hooks/useTauriCommands";
+import "./styles.css";
 
-function App() {
-  const [query, setQuery] = useState(""); const [projects, setProjects] = useState<Project[]>([]); const [voices, setVoices] = useState<Voice[]>([]); const [selectedVoice, setSelectedVoice] = useState(""); const [profile, setProfile] = useState("balanced"); const [language, setLanguage] = useState("tr"); const [speed, setSpeed] = useState(1); const [outputFormat, setOutputFormat] = useState("mp3"); const [activeProject, setActiveProject] = useState<Project | null>(null); const [newProjectOpen, setNewProjectOpen] = useState(false); const [newProjectName, setNewProjectName] = useState(""); const [script, setScript] = useState(""); const [saved, setSaved] = useState(true); const window = getCurrentWindow();
-  useEffect(() => { void invoke<Project[]>("list_projects").then(setProjects).catch(() => undefined); void invoke<Voice[]>("list_voices").then((items) => { setVoices(items); setSelectedVoice(items[0]?.name ?? ""); }).catch(() => undefined); }, []);
-  useEffect(() => { if (!activeProject) return; setSelectedVoice(activeProject.voice ?? voices[0]?.name ?? ""); setProfile(activeProject.profile); setLanguage(activeProject.language); setSpeed(activeProject.speed); setOutputFormat(activeProject.output_format); void invoke<string>("read_project_script", { name: activeProject.name }).then(setScript).catch(() => setScript("")); }, [activeProject]);
-  useEffect(() => { void window.outerSize().then((size) => { if (size.height < 560) void window.setSize(new LogicalSize(1440, 920)); }); }, [window]);
-  const createProject = async () => { if (!newProjectName.trim()) return; try { const project = await invoke<Project>("create_project", { name: newProjectName }); setProjects((current) => [project, ...current]); setNewProjectName(""); setNewProjectOpen(false); setActiveProject(project); setScript(""); } catch (error) { alert(String(error)); } };
-  const saveProject = async () => { if (!activeProject) return; const updated = { ...activeProject, voice: selectedVoice || null, profile, language, speed, output_format: outputFormat }; await invoke("save_project_script", { name: activeProject.name, script }); await invoke("save_project_settings", { project: updated }); setActiveProject(updated); setProjects((items) => items.map((item) => item.name === updated.name ? updated : item)); setSaved(true); };
-  return <div className="launcher"><TopBar window={window} onMenu={() => setNewProjectOpen(true)} />{activeProject ? <Editor project={activeProject} script={script} voices={voices} selectedVoice={selectedVoice} setSelectedVoice={(value) => { setSelectedVoice(value); setSaved(false); }} profile={profile} setProfile={(value) => { setProfile(value); setSaved(false); }} language={language} setLanguage={(value) => { setLanguage(value); setSaved(false); }} speed={speed} setSpeed={(value) => { setSpeed(value); setSaved(false); }} outputFormat={outputFormat} setOutputFormat={(value) => { setOutputFormat(value); setSaved(false); }} saved={saved} setScript={(value) => { setScript(value); setSaved(false); }} onBack={() => setActiveProject(null)} onSave={() => void saveProject()} /> : <Launcher query={query} setQuery={setQuery} projects={projects} onNew={() => setNewProjectOpen(true)} onOpen={setActiveProject} />} {newProjectOpen && <div className="modal-backdrop" onMouseDown={() => setNewProjectOpen(false)}><form className="project-modal" onSubmit={(event) => { event.preventDefault(); void createProject(); }} onMouseDown={(event) => event.stopPropagation()}><button type="button" className="modal-close" onClick={() => setNewProjectOpen(false)}>×</button><span className="modal-kicker">NEW SESSION</span><h2>Create a voiceover project</h2><p>Give your session a name to create a local project.</p><input autoFocus value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="Project name" /><button className="modal-submit" type="submit">Create project</button></form></div>}</div>;
+function AppContent() {
+  const { state, dispatch } = useApp();
+  const { loadProjects, createProject, renameProject, deleteProject, saveProject, readProjectScript, renderProject } = useProjects();
+  const { loadVoices, addVoice } = useVoices();
+  const { listOutputs, revealOutput } = useOutputs();
+  const { checkForUpdate, downloadAndInstall } = useUpdater();
+  const { checkSize } = useWindowSize();
+  const [renderProgress, setRenderProgress] = useState<RenderProgressEvent>({ phase: "starting", progress: 0 });
+  const [renderLogs, setRenderLogs] = useState<string[]>([]);
+  const [renderUiVisible, setRenderUiVisible] = useState(false);
+  const [consoleCollapsed, setConsoleCollapsed] = useState(false);
+  const [showSetup, setShowSetup] = useState(true);
+  const renderHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const consoleLines = useRef<HTMLDivElement | null>(null);
+
+  const t = translations[state.uiLanguage];
+
+  useEffect(() => {
+    document.documentElement.lang = state.uiLanguage;
+  }, [state.uiLanguage]);
+
+  useEffect(() => {
+    if (showSetup) return;
+    void loadProjects()
+      .then((projects) => dispatch({ type: "SET_PROJECTS", payload: projects }))
+      .catch((error) => alert(String(error)));
+    void loadVoices()
+      .then((voices) => dispatch({ type: "SET_VOICES", payload: voices }))
+      .catch((error) => alert(String(error)));
+    void checkSize().catch((error) => console.error("Window resize failed", error));
+  }, [loadProjects, loadVoices, checkSize, dispatch, showSetup]);
+
+  useEffect(() => {
+    const refreshVoices = () => {
+      void loadVoices()
+        .then((voices) => dispatch({ type: "SET_VOICES", payload: voices }))
+        .catch((error) => console.error("Voice refresh failed", error));
+    };
+    window.addEventListener("focus", refreshVoices);
+    return () => window.removeEventListener("focus", refreshVoices);
+  }, [loadVoices, dispatch]);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkForUpdate().then((update) => {
+      if (!update || cancelled) return;
+      const isTurkish = getUiLanguage() === "tr";
+      const accepted = confirm(
+        isTurkish
+          ? `Yeni sürüm ${update.version} bulundu. Şimdi indirip yüklemek ister misiniz?`
+          : `Version ${update.version} is available. Download and install it now?`
+      );
+      if (!accepted) return;
+      downloadAndInstall(update);
+    });
+    return () => { cancelled = true; };
+  }, [checkForUpdate, downloadAndInstall]);
+
+  const handleRenderProgress = useCallback((event: RenderProgressEvent) => {
+    const progress = Math.max(0, Math.min(100, Math.round(event.progress)));
+    setRenderProgress({ phase: event.phase, progress, indeterminate: event.indeterminate });
+    setRenderUiVisible(true);
+    if (event.phase === "complete" || event.phase === "failed") {
+      if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+      renderHideTimer.current = setTimeout(() => setRenderUiVisible(false), 2200);
+    }
+  }, []);
+
+  const handleRenderLog = useCallback((message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setRenderLogs((current) => [...current.slice(-99), `[${timestamp}] ${message}`]);
+  }, []);
+
+  useRenderProgress(handleRenderProgress);
+  useRenderLog(state.uiLanguage, handleRenderLog);
+
+  useEffect(() => {
+    const element = consoleLines.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }, [renderLogs]);
+
+  useEffect(() => () => {
+    if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+  }, []);
+
+  useEffect(() => {
+    void listOutputs()
+      .then((outputs) => dispatch({ type: "SET_OUTPUTS", payload: outputs }))
+      .catch((error) => console.error("Output refresh failed", error));
+  }, [state.lastOutput, listOutputs, dispatch]);
+
+  const handleNewProject = useCallback(() => dispatch({ type: "SET_NEW_PROJECT_OPEN", payload: true }), [dispatch]);
+  const handleOpenProject = useCallback((project: Project) => dispatch({ type: "SET_ACTIVE_PROJECT", payload: project }), [dispatch]);
+  const handleBack = useCallback(() => dispatch({ type: "SET_ACTIVE_PROJECT", payload: null }), [dispatch]);
+  const handleSettings = useCallback(() => dispatch({ type: "SET_SETTINGS_OPEN", payload: true }), [dispatch]);
+  const handleCloseSettings = useCallback(() => dispatch({ type: "SET_SETTINGS_OPEN", payload: false }), [dispatch]);
+  const handleCloseNewProject = useCallback(() => dispatch({ type: "SET_NEW_PROJECT_OPEN", payload: false }), [dispatch]);
+  const handleQueryChange = useCallback((query: string) => dispatch({ type: "SET_QUERY", payload: query }), [dispatch]);
+  const handleLanguageChange = useCallback((lang: UiLanguage) => {
+    localStorage.setItem("llmvoice.ui-language", lang);
+    dispatch({ type: "SET_UI_LANGUAGE", payload: lang });
+  }, [dispatch]);
+
+  const handleCreateProject = useCallback(async (name: string) => {
+    try {
+      const project = await createProject(name);
+      dispatch({ type: "ADD_PROJECT", payload: project });
+      dispatch({ type: "SET_NEW_PROJECT_OPEN", payload: false });
+      dispatch({ type: "SET_ACTIVE_PROJECT", payload: project });
+      dispatch({ type: "SET_SCRIPT", payload: "" });
+      dispatch({ type: "SET_SAVED", payload: true });
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [createProject, dispatch]);
+
+  const handleAddVoice = useCallback(async () => {
+    const source = await open({
+      multiple: false,
+      filters: [{ name: "Audio", extensions: ["wav", "mp3", "flac", "m4a", "aac", "ogg", "opus"] }],
+    });
+    if (typeof source !== "string") return;
+    const base = source.split(/[\\/]/).pop()?.split(".")[0] ?? "voice";
+    const name = prompt(t.voiceName, base);
+    if (!name) return;
+    try {
+      const voice = await addVoice(name, source);
+      dispatch({ type: "ADD_VOICE", payload: voice });
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [addVoice, t, dispatch]);
+
+  const handleSaveProject = useCallback(async (): Promise<boolean> => {
+    if (!state.activeProject) return false;
+    const updated = {
+      ...state.activeProject,
+      voice: state.selectedVoice || null,
+      profile: state.profile,
+      language: state.language,
+      speed: state.speed,
+      output_format: state.outputFormat,
+    };
+    try {
+      await saveProject(updated, state.script);
+      dispatch({ type: "UPDATE_PROJECT", payload: updated });
+      dispatch({ type: "SET_SAVED", payload: true });
+      return true;
+    } catch (error) {
+      alert(String(error));
+      return false;
+    }
+  }, [state, saveProject, dispatch]);
+
+  const handleRenderProject = useCallback(async () => {
+    if (!state.activeProject || state.rendering) return;
+    try {
+      const didSave = await handleSaveProject();
+      if (!didSave) return;
+      if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+      setRenderLogs([]);
+      setRenderProgress({ phase: "starting", progress: 0 });
+      setConsoleCollapsed(false);
+      setRenderUiVisible(true);
+      dispatch({ type: "SET_RENDERING", payload: true });
+      const projectToRender = {
+        ...state.activeProject,
+        voice: state.selectedVoice || null,
+        profile: state.profile,
+        language: state.language,
+        speed: state.speed,
+        output_format: state.outputFormat,
+      };
+      const output = await renderProject(projectToRender);
+      dispatch({ type: "SET_LAST_OUTPUT", payload: output });
+      alert(t.renderedSuccess);
+    } catch (error) {
+      const message = String(error);
+      setRenderProgress({ phase: "failed", progress: 0 });
+      setRenderLogs((current) => [...current.slice(-99), `[${new Date().toLocaleTimeString()}] ${message}`]);
+      if (renderHideTimer.current) clearTimeout(renderHideTimer.current);
+      renderHideTimer.current = setTimeout(() => setRenderUiVisible(false), 3500);
+      alert(message);
+    } finally {
+      dispatch({ type: "SET_RENDERING", payload: false });
+    }
+  }, [state, handleSaveProject, renderProject, t, dispatch]);
+
+  const renderProgressLabel = renderProgress.phase === "rendering"
+    ? t.generating
+    : renderProgress.phase === "complete"
+      ? t.renderComplete
+      : renderProgress.phase === "failed"
+        ? t.renderFailed
+        : t.preparing;
+
+  const handleScriptChange = useCallback((script: string) => {
+    dispatch({ type: "SET_SCRIPT", payload: script });
+  }, [dispatch]);
+
+  const handleVoiceChange = useCallback((voice: string) => {
+    dispatch({ type: "SET_SELECTED_VOICE", payload: voice });
+  }, [dispatch]);
+
+  const handleProfileChange = useCallback((profile: string) => {
+    dispatch({ type: "SET_PROFILE", payload: profile });
+  }, [dispatch]);
+
+  const handleLanguageChange2 = useCallback((language: string) => {
+    dispatch({ type: "SET_LANGUAGE", payload: language });
+  }, [dispatch]);
+
+  const handleSpeedChange = useCallback((speed: number) => {
+    dispatch({ type: "SET_SPEED", payload: speed });
+  }, [dispatch]);
+
+  const handleOutputFormatChange = useCallback((format: string) => {
+    dispatch({ type: "SET_OUTPUT_FORMAT", payload: format });
+  }, [dispatch]);
+
+  const handleRename = useCallback(async (oldName: string, newName: string) => {
+    try {
+      const updated = await renameProject(oldName, newName);
+      dispatch({ type: "UPDATE_PROJECT", payload: updated });
+      if (state.activeProject?.name === oldName) {
+        dispatch({ type: "SET_ACTIVE_PROJECT", payload: updated });
+      }
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [renameProject, state.activeProject, dispatch]);
+
+  const handleDelete = useCallback(async (name: string) => {
+    if (!confirm(`${t.deleteProject} "${name}"?`)) return;
+    try {
+      await deleteProject(name);
+      dispatch({ type: "REMOVE_PROJECT", payload: name });
+    } catch (error) {
+      alert(String(error));
+    }
+  }, [deleteProject, t, dispatch]);
+
+  const handleOutputPlay = useCallback((path: string) => {
+    dispatch({ type: "SET_CURRENT_AUDIO", payload: convertFileSrc(path) });
+    dispatch({ type: "SET_SHOW_PLAYER", payload: true });
+  }, [dispatch]);
+
+  const handleOutputReveal = useCallback((path: string) => {
+    void revealOutput(path);
+  }, [revealOutput]);
+
+  const handleOutputs = useCallback(() => {
+    dispatch({ type: "SET_SHOW_OUTPUTS", payload: !state.showOutputs });
+  }, [dispatch, state.showOutputs]);
+
+  useEffect(() => {
+    if (!state.activeProject) return;
+    dispatch({ type: "SET_SELECTED_VOICE", payload: state.activeProject.voice ?? state.voices[0]?.name ?? "" });
+    dispatch({ type: "SET_PROFILE", payload: state.activeProject.profile });
+    dispatch({ type: "SET_LANGUAGE", payload: state.activeProject.language });
+    dispatch({ type: "SET_SPEED", payload: state.activeProject.speed });
+    dispatch({ type: "SET_OUTPUT_FORMAT", payload: state.activeProject.output_format });
+    void readProjectScript(state.activeProject.name)
+      .then((script) => {
+        dispatch({ type: "SET_SCRIPT", payload: script });
+        dispatch({ type: "SET_SAVED", payload: true });
+      })
+      .catch((error) => alert(String(error)));
+  }, [state.activeProject, state.voices, readProjectScript, dispatch]);
+
+  const handleOpenFeedback = useCallback(() => dispatch({ type: "SET_SHOW_FEEDBACK", payload: true }), [dispatch]);
+
+  const handleFeedbackSubmit = useCallback((message: string) => {
+    if (!message.trim()) return;
+    const url = `https://github.com/yud3-stack/LLMVoice/issues/new?title=${encodeURIComponent("LLMVoice feedback")}&body=${encodeURIComponent(message.trim())}`;
+    globalThis.open(url, "_blank");
+  }, []);
+
+  return (
+    <div className={`launcher${renderUiVisible ? " render-ui-visible" : ""}`}>
+      {showSetup && <SetupWizard t={t} onReady={() => setShowSetup(false)} />}
+      <TopBar onMenu={handleNewProject} onFeedback={handleOpenFeedback} onOutputs={handleOutputs} t={t} />
+      {state.activeProject ? (
+        <Editor
+          project={state.activeProject}
+          script={state.script}
+          voices={state.voices}
+          selectedVoice={state.selectedVoice}
+          onVoiceChange={handleVoiceChange}
+          profile={state.profile}
+          onProfileChange={handleProfileChange}
+          language={state.language}
+          onLanguageChange={handleLanguageChange2}
+          speed={state.speed}
+          onSpeedChange={handleSpeedChange}
+          outputFormat={state.outputFormat}
+          onOutputFormatChange={handleOutputFormatChange}
+          saved={state.saved}
+          rendering={state.rendering}
+          onScriptChange={handleScriptChange}
+          onBack={handleBack}
+          onSave={handleSaveProject}
+          onRender={handleRenderProject}
+          t={t}
+        />
+      ) : (
+        <Launcher
+          query={state.query}
+          onQueryChange={handleQueryChange}
+          projects={state.projects}
+          onNew={handleNewProject}
+          onOpen={handleOpenProject}
+          onRename={handleRename}
+          onDelete={handleDelete}
+          onSettings={handleSettings}
+          t={t}
+        />
+      )}
+      {state.settingsOpen && (
+        <SettingsPanel
+          voices={state.voices}
+          language={state.uiLanguage}
+          onLanguage={handleLanguageChange}
+          onAdd={handleAddVoice}
+          onClose={handleCloseSettings}
+          t={t}
+        />
+      )}
+      {state.newProjectOpen && (
+        <ProjectModal
+          isOpen={state.newProjectOpen}
+          onClose={handleCloseNewProject}
+          onSubmit={handleCreateProject}
+          t={t}
+        />
+      )}
+      <div id="render-console" className={consoleCollapsed ? "collapsed" : ""} aria-live="polite">
+        <div className="render-console-head">
+          <AudioLines size={13} />
+          <strong>{t.renderActivity}</strong>
+          <span>{renderProgressLabel}</span>
+          <button id="render-console-close" aria-label={t.hideRenderActivity} onClick={() => setConsoleCollapsed(true)}>×</button>
+        </div>
+        <div className="render-console-lines" ref={consoleLines}>
+          {renderLogs.length === 0
+            ? <div className="render-console-empty">{t.waitingForRender}</div>
+            : renderLogs.map((line, index) => <div key={`${index}-${line}`}>{line}</div>)}
+        </div>
+      </div>
+      <button id="render-console-toggle" className={consoleCollapsed ? "visible" : ""} aria-label={t.showRenderActivity} onClick={() => setConsoleCollapsed(false)}>
+        <AudioLines size={14} />
+      </button>
+      <div id="render-progress" role="status" aria-live="polite">
+        <div className="render-progress-top">
+          <span className="render-progress-label">{renderProgressLabel}</span>
+          <span className="render-progress-value">
+            {renderProgress.indeterminate ? t.inProgress : `${renderProgress.progress}%`}
+          </span>
+        </div>
+        <div className={`render-progress-track${state.rendering ? " active" : ""}${renderProgress.indeterminate ? " indeterminate" : ""}`} aria-hidden="true">
+          <i style={{ width: renderProgress.indeterminate ? "35%" : `${renderProgress.progress}%` }} />
+        </div>
+      </div>
+      <div id="outputs-popover" className={state.showOutputs ? "visible" : ""}>
+        <strong>{t.recentVoiceovers}</strong>
+        {state.outputs.slice(0, 8).map((item) => (
+          <div key={item.path} className="output-entry">
+            <span className="output-name" title={item.path}>{item.name}</span>
+            <span className="output-actions">
+              <button className="output-action folder-action" title={t.showFolder} onClick={() => handleOutputReveal(item.path)}>📁</button>
+              <button className="output-action play-action" title={t.playAudio} onClick={() => handleOutputPlay(item.path)}>▶</button>
+            </span>
+          </div>
+        ))}
+        {state.outputs.length === 0 && <span className="outputs-empty">{t.noRendered}</span>}
+      </div>
+      <div id="feedback-panel" className={state.showFeedback ? "visible" : ""}>
+        <form id="feedback-form" onSubmit={(e) => { e.preventDefault(); const msg = (e.target as HTMLFormElement).elements.namedItem("message") as HTMLTextAreaElement; handleFeedbackSubmit(msg.value); msg.value = ""; dispatch({ type: "SET_SHOW_FEEDBACK", payload: false }); }}>
+          <button type="button" className="feedback-close" onClick={() => dispatch({ type: "SET_SHOW_FEEDBACK", payload: false })}>×</button>
+          <span className="modal-kicker">{t.feedbackKicker}</span>
+          <h2>{t.feedbackTitle}</h2>
+          <p>{t.feedbackDescription}</p>
+          <textarea name="message" id="feedback-message" placeholder={t.feedbackPlaceholder} />
+          <button type="submit">{t.feedbackSubmit}</button>
+        </form>
+      </div>
+      <div id="studio-player" className={state.showPlayer ? "player-visible" : ""}>
+        <span className="player-kicker">{t.nowPlaying}</span>
+        <audio id="studio-audio" controls src={state.currentAudio} onEnded={() => dispatch({ type: "SET_SHOW_PLAYER", payload: false })} />
+        <button id="player-close" onClick={() => {
+          document.querySelector<HTMLAudioElement>("#studio-audio")?.pause();
+          dispatch({ type: "SET_SHOW_PLAYER", payload: false });
+        }}>×</button>
+      </div>
+    </div>
+  );
 }
 
-function TopBar({ window, onMenu }: { window: ReturnType<typeof getCurrentWindow>; onMenu: () => void }) { return <header className="launcher-bar"><button className="chrome-button" onClick={onMenu}><Menu size={17} /></button><div className="drag-zone" data-tauri-drag-region onMouseDown={() => void window.startDragging()} /><div className="instance-select"><span className="mini-logo"><AudioLines size={12} /></span><strong>LLMVoice</strong><span className="bar-context">Personal workspace</span><ChevronDown size={13} /></div><div className="chrome-actions"><button className="chrome-button"><Bell size={16} /></button><button className="chrome-button"><MessageSquarePlus size={16} /></button><button className="chrome-button"><Download size={16} /></button><span className="window-divider" /><button className="window-control" onClick={() => void window.minimize()}>—</button><button className="window-control" onClick={() => void window.toggleMaximize()}>□</button><button className="window-control close" onClick={() => void window.close()}>×</button></div></header>; }
-function Launcher({ query, setQuery, projects, onNew, onOpen }: { query: string; setQuery: (value: string) => void; projects: Project[]; onNew: () => void; onOpen: (project: Project) => void }) { const visible = projects.filter((item) => item.name.toLowerCase().includes(query.toLowerCase())); return <main className="launcher-content"><button className="login-button">Offline workspace</button><div className="hero-brand"><div className="hero-wave"><AudioLines size={29} /></div><h1>LLMVoice</h1><span>LOCAL VOICE WORKSPACE</span></div><div className="search-box"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Find a project or voice" /><kbd>Ctrl K</kbd></div><div className="project-grid"><button className="project-card fresh" onClick={onNew}><div className="card-icon"><Plus size={27} strokeWidth={1.5} /></div><div className="card-copy"><strong>New voiceover</strong><span>Start a fresh narration session</span></div></button>{visible.map((project) => <button className="project-card" key={project.name} onClick={() => onOpen(project)}><div className="card-icon"><FolderOpen size={22} strokeWidth={1.5} /></div><div className="card-menu"><MoreVertical size={17} /></div><div className="card-copy"><strong>{project.name}</strong><span>Local project · Updated recently</span></div></button>)}{visible.length === 0 && <div className="no-projects"><Mic2 size={18} />No saved projects yet</div>}</div><div className="launcher-footer"><span><span className="online-dot" />Local engine ready</span><span>XTTS-v2 · Turkish enabled</span><button><Settings2 size={14} />Settings</button><Laptop size={14} /></div></main>; }
-
-function Editor({ project, script, voices, selectedVoice, setSelectedVoice, profile, setProfile, language, setLanguage, speed, setSpeed, outputFormat, setOutputFormat, saved, setScript, onBack, onSave }: { project: Project; script: string; voices: Voice[]; selectedVoice: string; setSelectedVoice: (value: string) => void; profile: string; setProfile: (value: string) => void; language: string; setLanguage: (value: string) => void; speed: number; setSpeed: (value: number) => void; outputFormat: string; setOutputFormat: (value: string) => void; saved: boolean; setScript: (value: string) => void; onBack: () => void; onSave: () => void }) { const [voiceOpen, setVoiceOpen] = useState(false); const current = voices.find((voice) => voice.name === selectedVoice); return <main className="editor-workspace"><div className="editor-top"><button className="back-button" onClick={onBack}><ArrowLeft size={16} />All projects</button><div className="editor-title"><FileText size={15} /><strong>{project.name}</strong><span>{saved ? "Saved" : "Unsaved changes"}</span></div><button className="save-button" onClick={onSave}><Save size={15} />Save</button></div><div className="editor-layout"><section className="script-surface"><div className="surface-heading"><div><span className="modal-kicker">SCRIPT</span><h2>Voiceover script</h2></div><span className="script-meta">{script.length} characters</span></div><textarea autoFocus value={script} onChange={(event) => setScript(event.target.value)} placeholder="Write or paste your script here..." spellCheck={false} /><div className="surface-foot"><span><FileText size={13} />Plain text · UTF-8</span><span>Saved with project</span></div></section><aside className="inspector"><div className="inspector-heading"><span className="modal-kicker">SETUP</span><h2>Voiceover</h2></div><label>VOICE<div className="voice-picker"><button className={voiceOpen ? "select-field voice-trigger open" : "select-field voice-trigger"} onClick={() => setVoiceOpen(!voiceOpen)}><span className="voice-mark"><Mic2 size={15} /></span><span><strong>{current?.name ?? "No voices installed"}</strong><small>{current ? "Local reference" : "Add a voice from the CLI"}</small></span><ChevronDown size={15} /></button><AnimatePresence>{voiceOpen && <motion.div className="voice-menu" initial={{ opacity: 0, y: -6, scale: .98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -5, scale: .98 }} transition={{ duration: .16 }}><div className="voice-menu-label">LOCAL VOICES</div>{voices.length ? voices.map((voice, index) => <motion.button key={voice.name} className={voice.name === selectedVoice ? "voice-option selected" : "voice-option"} onClick={() => { setSelectedVoice(voice.name); setVoiceOpen(false); }} initial={{ opacity: 0, x: -5 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * .035 }}><span className="option-icon"><Mic2 size={13} /></span><span>{voice.name}</span>{voice.name === selectedVoice && <i />}</motion.button>) : <div className="voice-empty">No local voices found.</div>}</motion.div>}</AnimatePresence></div></label><label>LANGUAGE<select className="setting-select" value={language} onChange={(event) => setLanguage(event.target.value)}><option value="tr">Turkish</option><option value="en">English</option><option value="de">German</option><option value="fr">French</option></select></label><label>DELIVERY<div className="delivery-tabs">{["natural", "balanced", "stable"].map((item) => <button key={item} className={profile === item ? "active" : ""} onClick={() => setProfile(item)}>{item[0].toUpperCase() + item.slice(1)}</button>)}</div></label><label>PACE<div className="speed-control"><button onClick={() => setSpeed(Math.max(.5, +(speed - .1).toFixed(1)))}>-</button><strong>{speed.toFixed(1)}x</strong><button onClick={() => setSpeed(Math.min(2, +(speed + .1).toFixed(1)))}>+</button></div></label><label>OUTPUT<select className="setting-select" value={outputFormat} onChange={(event) => setOutputFormat(event.target.value)}><option value="mp3">MP3</option><option value="wav">WAV</option></select></label><div className="inspector-info"><SlidersHorizontal size={15} /><span>Settings are saved with this project.</span></div><button className="render-locked"><AudioLines size={16} />Render voiceover <span>Next</span></button></aside></div></main>; }
-
-export default App;
+export default function App() {
+  return (
+    <AppProvider>
+      <ErrorBoundary>
+        <AppContent />
+      </ErrorBoundary>
+    </AppProvider>
+  );
+}

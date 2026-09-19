@@ -1,7 +1,7 @@
 {
   "name": "llmvoice-studio",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,6 +10,10 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-process": "^2.2.0",
+    "@tauri-apps/plugin-updater": "^2.11.0",
+    "lucide": "^1.46.0",
     "lucide-react": "^0.468.0",
     "motion": "^13.3.0",
     "react": "^19.1.0",

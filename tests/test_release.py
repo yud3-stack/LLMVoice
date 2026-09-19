@@ -233,6 +233,45 @@ def test_forbidden_audio_or_model_artifact_is_rejected(tmp_path) -> None:
         validate_wheel(wheel, config)
 
 
+def test_wheel_package_identity_must_match_project(tmp_path) -> None:
+    _project(tmp_path)
+    config = load_project_config(tmp_path)
+    wheel = tmp_path / "llmvoice-1.2.3-py3-none-any.whl"
+    _wheel(wheel, "1.2.3")
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("llmvoice/__init__.py", "")
+        archive.writestr("llmvoice/voices/manager.py", "")
+        archive.writestr(
+            "llmvoice-1.2.3.dist-info/METADATA",
+            "Metadata-Version: 2.4\nName: OtherPackage\nVersion: 1.2.3\n",
+        )
+        archive.writestr("llmvoice-1.2.3.dist-info/licenses/LICENSE", "MIT License")
+    with pytest.raises(ReleaseError, match="package name"):
+        validate_wheel(wheel, config)
+
+
+def test_unsafe_archive_paths_are_rejected(tmp_path) -> None:
+    _project(tmp_path)
+    config = load_project_config(tmp_path)
+    wheel = tmp_path / "llmvoice-1.2.3-py3-none-any.whl"
+    _wheel(wheel, "1.2.3", "../outside.txt")
+
+    with pytest.raises(ReleaseError, match="Unsafe path"):
+        validate_wheel(wheel, config)
+
+
+def test_duplicate_archive_paths_are_rejected(tmp_path) -> None:
+    _project(tmp_path)
+    config = load_project_config(tmp_path)
+    wheel = tmp_path / "llmvoice-1.2.3-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        archive.writestr("llmvoice/__init__.py", "")
+        archive.writestr("LLMVOICE/__init__.py", "duplicate")
+
+    with pytest.raises(ReleaseError, match="Duplicate path"):
+        validate_wheel(wheel, config)
+
+
 def test_missing_release_artifact_is_rejected(tmp_path) -> None:
     _project(tmp_path)
     (tmp_path / "dist").mkdir()
@@ -282,7 +321,8 @@ def test_installer_and_release_workflow_security_invariants() -> None:
     assert "Invoke-Expression" not in installer
     assert '"Machine"' not in installer
     assert "Get-FileHash" in installer
-    assert "releases/latest/download/install-manifest.json" in installer
+    assert "api.github.com/repos/$($script:Repository)/releases" in installer
+    assert 'install-manifest.json"' in installer
     assert "& llmvoice" not in installer
     assert 'Invoke-Native -FilePath $llmvoiceExe -Arguments @("doctor")' in installer
     assert "Runtime package version mismatch for $packageName" in installer

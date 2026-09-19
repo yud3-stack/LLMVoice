@@ -20,6 +20,8 @@ LANGUAGE_NAMES = {
     "zh-cn": "Chinese",
 }
 
+SUPPORTED_LANGUAGES = frozenset(LANGUAGE_NAMES)
+
 
 def language_label(code: str, auto_detected: bool = False) -> str:
     """Return a friendly language label while preserving the engine code."""

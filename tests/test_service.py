@@ -9,6 +9,7 @@ from llmvoice.service import ensure_output_available, output_path_for, read_and_
 def test_default_output_is_next_to_input(tmp_path) -> None:
     transcript = tmp_path / "episode.txt"
     assert output_path_for(transcript, None) == tmp_path / "episode.mp3"
+    assert output_path_for(transcript, None, "wav") == tmp_path / "episode.wav"
 
 
 def test_explicit_output_is_resolved(tmp_path, monkeypatch) -> None:

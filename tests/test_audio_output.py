@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from llmvoice.audio.merge import encode_mp3
+from llmvoice.audio.merge import encode_mp3, encode_wav
 from llmvoice.core.exceptions import AudioToolError
 
 
@@ -59,3 +59,23 @@ def test_encoding_normalizes_loudness_and_applies_speed(tmp_path, monkeypatch) -
     assert arguments_seen[arguments_seen.index("-filter:a") + 1] == (
         "atempo=0.9500,loudnorm=I=-16:TP=-1.5:LRA=11"
     )
+
+
+def test_wav_encoding_uses_pcm_and_atomic_wav_output(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "merged.wav"
+    source.write_bytes(b"wav")
+    output = tmp_path / "output.wav"
+    arguments_seen: list[str] = []
+    monkeypatch.setattr("llmvoice.audio.merge.require_ffmpeg", lambda: ("ffmpeg", "ffprobe"))
+
+    def capture(arguments: list[str], purpose: str) -> None:
+        arguments_seen.extend(arguments)
+        Path(arguments[-1]).write_bytes(b"wav")
+
+    monkeypatch.setattr("llmvoice.audio.merge.run_tool", capture)
+
+    encode_wav(source, output, speed=1.0)
+
+    assert output.read_bytes() == b"wav"
+    assert arguments_seen[arguments_seen.index("-c:a") + 1] == "pcm_s16le"
+    assert not list(tmp_path.glob(".output.llmvoice-*.wav"))

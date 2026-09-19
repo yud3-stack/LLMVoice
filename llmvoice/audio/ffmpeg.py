@@ -8,6 +8,8 @@ from pathlib import Path
 
 from llmvoice.core.exceptions import AudioToolError
 
+FFMPEG_TIMEOUT_SECONDS = 120
+
 logger = logging.getLogger(__name__)
 _DLL_DIRECTORY_HANDLES: list[object] = []
 _REGISTERED_DLL_DIRECTORIES: set[Path] = set()
@@ -87,9 +89,14 @@ def run_tool(arguments: list[str], purpose: str) -> None:
             encoding="utf-8",
             errors="replace",
             shell=False,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
         )
     except OSError as exc:
         raise AudioToolError(f"Could not start FFmpeg while {purpose}.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise AudioToolError(
+            f"FFmpeg timed out after {FFMPEG_TIMEOUT_SECONDS} seconds while {purpose}."
+        ) from exc
     if result.returncode != 0:
         logger.debug("FFmpeg command failed: %r\n%s", arguments, result.stderr)
         detail = result.stderr.strip().splitlines()

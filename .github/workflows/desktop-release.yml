@@ -1,0 +1,97 @@
+name: Release desktop app
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable-x86_64-pc-windows-msvc
+
+      - name: Set desktop version from release tag
+        shell: pwsh
+        working-directory: desktop
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_TAG -replace '^desktop-v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+            throw "Desktop release tag must use desktop-vX.Y.Z format: $env:RELEASE_TAG"
+          }
+
+          npm version $version --no-git-tag-version
+
+          $configPath = "src-tauri/tauri.conf.json"
+          $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+          $config.version = $version
+          $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding utf8
+
+          $cargoPath = "src-tauri/Cargo.toml"
+          $cargo = Get-Content -LiteralPath $cargoPath -Raw
+          $cargo = [regex]::Replace($cargo, '(?m)^version = "[^"]+"$', "version = `"$version`"", 1)
+          Set-Content -LiteralPath $cargoPath -Value $cargo -Encoding utf8
+
+          $lockPath = "src-tauri/Cargo.lock"
+          $lock = Get-Content -LiteralPath $lockPath -Raw
+          $lockPattern = '(?ms)(\[\[package\]\]\r?\nname = "llmvoice-studio"\r?\nversion = ")[^"]+(")'
+          if (-not [regex]::IsMatch($lock, $lockPattern)) {
+            throw "The desktop package was not found in src-tauri/Cargo.lock."
+          }
+          $lock = $lock -replace $lockPattern, ('${1}' + $version + '${2}')
+          Set-Content -LiteralPath $lockPath -Value $lock -Encoding utf8
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build and publish updater release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: LLMVoice Studio ${{ github.ref_name }}
+          releaseBody: See the assets below to install this version.
+          releaseDraft: false
+          prerelease: true
+          includeUpdaterJson: true
+
+      - name: Publish desktop updater channel
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $downloadDirectory = Join-Path $env:RUNNER_TEMP "llmvoice-updater"
+          New-Item -ItemType Directory -Path $downloadDirectory -Force | Out-Null
+          gh release download $env:RELEASE_TAG --pattern latest.json --dir $downloadDirectory
+
+          gh release view desktop-latest *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create desktop-latest `
+              --title "LLMVoice Studio updater channel" `
+              --notes "Early Access updater manifest channel. The downloadable application is published in versioned desktop releases."
+          }
+          gh release upload desktop-latest (Join-Path $downloadDirectory "latest.json") --clobber

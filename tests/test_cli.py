@@ -13,6 +13,22 @@ from llmvoice.tts.device import DeviceInfo
 runner = CliRunner()
 
 
+def test_capabilities_exposes_desktop_contract() -> None:
+    result = runner.invoke(app, ["capabilities", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["schema_version"] == 1
+    assert payload["event_protocol"] == "llmvoice.ndjson.v1"
+    assert payload["output_formats"] == ["mp3", "wav"]
+    assert set(payload["quality_profiles"]) == {
+        "natural",
+        "balanced",
+        "stable",
+        "expressive",
+    }
+
+
 def test_start_reports_missing_input_without_traceback(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
     result = runner.invoke(app, ["start", str(tmp_path / "missing.txt")])
@@ -160,6 +176,25 @@ def test_voice_remove_confirmation_defaults_to_no(tmp_path, monkeypatch) -> None
     assert (tmp_path / "data" / "voices" / "friday.wav").exists()
 
 
+def test_voice_record_rejects_path_traversal_before_recording(tmp_path, monkeypatch) -> None:
+    data_dir = tmp_path / "data"
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(data_dir))
+    record_called = False
+
+    def fail_if_recorded(*args, **kwargs):
+        nonlocal record_called
+        record_called = True
+
+    monkeypatch.setattr("llmvoice.cli.record_audio", fail_if_recorded)
+
+    result = runner.invoke(app, ["voice", "record", "..\\escape", "--yes"])
+
+    assert result.exit_code == 1
+    assert "Voice name" in result.output
+    assert not record_called
+    assert not (data_dir / "cache" / "escape.wav").exists()
+
+
 def test_config_get_set_and_invalid_field(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
     set_result = runner.invoke(app, ["config", "set", "device", "cpu"])
@@ -182,6 +217,21 @@ def test_config_json_outputs_are_parseable(tmp_path, monkeypatch) -> None:
     assert json.loads(set_result.output) == {"field": "device", "value": "cpu"}
     assert json.loads(get_result.output) == {"field": "device", "value": "cpu"}
     assert json.loads(show_result.output)["device"] == "cpu"
+
+
+def test_json_errors_are_machine_readable(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+
+    result = runner.invoke(app, ["config", "get", "missing", "--json"])
+
+    assert result.exit_code == 1
+    assert json.loads(result.output) == {
+        "ok": False,
+        "error": "ConfigurationError",
+        "message": "Unknown config field 'missing'.\n\nAvailable fields:\n"
+        "default_voice, default_language, default_speed, output_format, device, engine, "
+        "chunk_size, chunk_pause_ms, crossfade_ms, quality_profile",
+    }
 
 
 def test_doctor_renders_mocked_checks(tmp_path, monkeypatch) -> None:
@@ -320,6 +370,105 @@ def test_start_json_dry_run_is_single_machine_readable_result(tmp_path, monkeypa
     assert payload["dry_run"] is True
     assert payload["voice"] == "friday"
     assert payload["language"] == "en"
+
+
+def test_start_json_events_dry_run_is_ndjson(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("This is a short transcript.", encoding="utf-8")
+    voice_dir = tmp_path / "data" / "voices"
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "friday.wav").write_bytes(b"voice")
+    ConfigStore(AppPaths(tmp_path / "data")).set("default_voice", "friday")
+    monkeypatch.setattr("llmvoice.cli.resolve_device", lambda requested: DeviceInfo("cpu", "CPU"))
+
+    result = runner.invoke(
+        app,
+        ["start", str(transcript), "--language", "en", "--dry-run", "--json-events"],
+    )
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.output.splitlines()]
+    assert len(events) == 1
+    assert events[0]["event"] == "result"
+    assert events[0]["ok"] is True
+    assert events[0]["dry_run"] is True
+
+
+def test_start_rejects_combined_json_modes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+
+    result = runner.invoke(
+        app,
+        ["start", str(tmp_path / "missing.txt"), "--json", "--json-events"],
+    )
+
+    assert result.exit_code == 1
+    assert "Use either --json or --json-events" in result.output
+
+
+def test_start_json_events_emits_structured_error(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+
+    result = runner.invoke(
+        app,
+        ["start", str(tmp_path / "missing.txt"), "--json-events"],
+    )
+
+    assert result.exit_code == 1
+    event = json.loads(result.output)
+    assert event["event"] == "error"
+    assert event["ok"] is False
+    assert event["error"] == "InputFileError"
+
+
+def test_start_json_events_streams_stage_progress_and_result(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
+    transcript = tmp_path / "transcript.txt"
+    transcript.write_text("This is a short transcript.", encoding="utf-8")
+    voice_dir = tmp_path / "data" / "voices"
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "friday.wav").write_bytes(b"voice")
+    metadata = AudioMetadata(4.0, 24000, 1, "mp3", "mp3")
+    monkeypatch.setattr("llmvoice.cli.resolve_device", lambda requested: DeviceInfo("cpu", "CPU"))
+    monkeypatch.setattr("llmvoice.cli.require_ffmpeg", lambda: ("ffmpeg", "ffprobe"))
+    monkeypatch.setattr("llmvoice.cli.check_synthesis_disk_space", lambda *args: (1, 1))
+    monkeypatch.setattr("llmvoice.cli.probe_audio", lambda path: metadata)
+
+    class Engine:
+        display_name = "XTTS-v2"
+        is_model_installed = True
+
+    monkeypatch.setattr("llmvoice.cli.create_engine", lambda *args: Engine())
+
+    def fake_run(self, request, plan, progress, stage, resume=False):
+        stage("preparing_reference")
+        stage("model_ready")
+        progress(1, 2)
+        progress(2, 2)
+        stage("encoding")
+        request.output_path.write_bytes(b"audio")
+
+    monkeypatch.setattr("llmvoice.cli.VoiceService.run", fake_run)
+
+    result = runner.invoke(
+        app,
+        ["start", str(transcript), "--voice", "friday", "--json-events"],
+    )
+
+    assert result.exit_code == 0
+    events = [json.loads(line) for line in result.output.splitlines()]
+    assert [event["event"] for event in events] == [
+        "stage",
+        "stage",
+        "progress",
+        "progress",
+        "stage",
+        "result",
+    ]
+    assert events[2]["percent"] == 50
+    assert events[3]["percent"] == 100
+    assert events[-1]["output"].endswith("transcript.mp3")
 
 
 def test_start_json_error_is_single_machine_readable_result(tmp_path, monkeypatch) -> None:
