@@ -30,6 +30,7 @@ def test_powershell_installer_parses_without_errors() -> None:
         encoding="utf-8",
         errors="replace",
         shell=False,
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
 
@@ -60,6 +61,7 @@ def test_powershell_python_candidate_regressions() -> None:
         encoding="utf-8",
         errors="replace",
         shell=False,
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "PYTHON_DETECTION_CASES_PASSED=13" in result.stdout
@@ -91,6 +93,7 @@ def test_powershell_native_invocation_regressions() -> None:
         encoding="utf-8",
         errors="replace",
         shell=False,
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "NATIVE_STDERR_WARNING_EXIT_0=PASSED" in result.stdout
@@ -123,6 +126,7 @@ def test_powershell_runtime_profile_regressions() -> None:
         encoding="utf-8",
         errors="replace",
         shell=False,
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "RUNTIME_PROFILE_CASES_PASSED=6" in result.stdout
@@ -154,6 +158,7 @@ def test_powershell_publish_transaction_regressions() -> None:
         encoding="utf-8",
         errors="replace",
         shell=False,
+        timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "LAUNCHER_SINGLE_MOVE=PASSED" in result.stdout
