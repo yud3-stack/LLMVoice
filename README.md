@@ -71,7 +71,7 @@ llmvoice compare transcript.txt --voice friday --output-dir compare
 ```
 
 This creates `natural`, `balanced`, and `stable` MP3 files. Select one profile
-with `--quality`, or persist it with:
+with `--quality`, including the more varied `expressive` profile, or persist it with:
 
 ```cmd
 llmvoice config set quality_profile natural
@@ -84,7 +84,7 @@ Installer options include:
 .\install.ps1 -Runtime auto
 .\install.ps1 -Runtime cuda
 .\install.ps1 -Runtime cpu
-.\install.ps1 -Version 0.1.7
+.\install.ps1 -Version 0.1.8
 .\install.ps1 -Force
 .\install.ps1 -Debug
 ```
@@ -443,9 +443,9 @@ Run the remaining release checks:
 python -m compileall llmvoice
 python -m pip check
 python -m build
-python scripts\release.py validate-tag --tag v0.1.7
-python scripts\release.py prepare --tag v0.1.7 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
-python scripts\release.py validate --tag v0.1.7 --assets-dir release-assets
+python scripts\release.py validate-tag --tag v0.1.8
+python scripts\release.py prepare --tag v0.1.8 --dist-dir dist --installer installer\install.ps1 --output-dir release-assets
+python scripts\release.py validate --tag v0.1.8 --assets-dir release-assets
 ```
 
 Integration tests generate small synthetic WAV files and verify:
