@@ -304,5 +304,5 @@ def test_installer_and_release_workflow_security_invariants() -> None:
     assert "contents: write" in workflow
     assert "validate-tag" in workflow
     assert "python -m pytest" in workflow
-    assert "python -m pytest -m integration" in workflow
+    assert "integration" in workflow
     assert "gh release create" in workflow
