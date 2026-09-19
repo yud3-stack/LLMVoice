@@ -25,3 +25,8 @@ build/
 !samples/.gitkeep
 desktop/node_modules/
 desktop/src-tauri/target/
+.obsidian/
+.env
+.env.*
+!.env.example
+*.log
