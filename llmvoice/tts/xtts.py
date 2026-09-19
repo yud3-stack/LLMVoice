@@ -17,6 +17,7 @@ QUALITY_PROFILES = {
     "natural": {"temperature": 0.85, "top_p": 0.90, "top_k": 50, "repetition_penalty": 1.8},
     "balanced": {"temperature": 0.75, "top_p": 0.85, "top_k": 50, "repetition_penalty": 2.0},
     "stable": {"temperature": 0.55, "top_p": 0.75, "top_k": 40, "repetition_penalty": 2.2},
+    "expressive": {"temperature": 0.95, "top_p": 0.95, "top_k": 60, "repetition_penalty": 1.6},
 }
 
 

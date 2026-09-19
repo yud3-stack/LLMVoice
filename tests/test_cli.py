@@ -13,6 +13,22 @@ from llmvoice.tts.device import DeviceInfo
 runner = CliRunner()
 
 
+def test_capabilities_exposes_desktop_contract() -> None:
+    result = runner.invoke(app, ["capabilities", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["schema_version"] == 1
+    assert payload["event_protocol"] == "llmvoice.ndjson.v1"
+    assert payload["output_formats"] == ["mp3", "wav"]
+    assert set(payload["quality_profiles"]) == {
+        "natural",
+        "balanced",
+        "stable",
+        "expressive",
+    }
+
+
 def test_start_reports_missing_input_without_traceback(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("LLMVOICE_DATA_DIR", str(tmp_path / "data"))
     result = runner.invoke(app, ["start", str(tmp_path / "missing.txt")])

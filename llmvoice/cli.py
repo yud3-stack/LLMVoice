@@ -53,6 +53,10 @@ from llmvoice.voices.manager import RECOMMENDED_MAX_SECONDS, VoiceManager
 console = Console()
 error_console = Console(stderr=True)
 
+CLI_CONTRACT_SCHEMA = 1
+CLI_EVENT_PROTOCOL = "llmvoice.ndjson.v1"
+SUPPORTED_OUTPUT_FORMATS = ("mp3", "wav")
+
 
 def _voice_to_dict(voice) -> dict[str, object]:
     """Return stable, path-safe data for automation clients."""
@@ -102,6 +106,27 @@ app.add_typer(voice_app, name="voice")
 app.add_typer(config_app, name="config")
 app.add_typer(model_app, name="model")
 app.add_typer(audio_app, name="audio")
+
+
+@app.command("capabilities")
+def capabilities(
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Print machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Show the stable CLI contract exposed to desktop clients."""
+    payload = {
+        "schema_version": CLI_CONTRACT_SCHEMA,
+        "version": __version__,
+        "output_formats": list(SUPPORTED_OUTPUT_FORMATS),
+        "quality_profiles": sorted(VALID_QUALITY_PROFILES),
+        "event_protocol": CLI_EVENT_PROTOCOL,
+    }
+    if json_output:
+        _print_json(payload)
+        return
+    console.print("\n[bold]LLMVoice capabilities[/bold]\n")
+    console.print(details_table([(key, str(value)) for key, value in payload.items()]))
 
 
 def _version_callback(value: bool) -> None:

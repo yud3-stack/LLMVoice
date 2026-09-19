@@ -10,7 +10,7 @@ from llmvoice.core.exceptions import ConfigurationError
 from llmvoice.core.paths import AppPaths
 
 VALID_DEVICES = {"auto", "cuda", "cpu"}
-VALID_QUALITY_PROFILES = {"natural", "balanced", "stable"}
+VALID_QUALITY_PROFILES = {"natural", "balanced", "stable", "expressive"}
 MIN_SPEED = 0.5
 MAX_SPEED = 2.0
 MIN_CHUNK_PAUSE_MS = 0
@@ -63,7 +63,7 @@ class AppConfig:
             raise ConfigurationError("Config 'device' must be a string.")
         if not isinstance(self.quality_profile, str) or self.quality_profile not in VALID_QUALITY_PROFILES:
             raise ConfigurationError(
-                "Config 'quality_profile' must be one of: natural, balanced, stable."
+                "Config 'quality_profile' must be one of: natural, balanced, stable, expressive."
             )
         if self.device not in VALID_DEVICES:
             raise ConfigurationError("Config 'device' must be one of: auto, cuda, cpu.")
